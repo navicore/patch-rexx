@@ -80,7 +80,7 @@ impl Environment {
             }
         }
         // Default: return the compound name itself
-        RexxValue::new(format!("{}{}", stem_upper, tail_upper))
+        RexxValue::new(format!("{stem_upper}{tail_upper}"))
     }
 
     /// Set a compound variable.
@@ -89,10 +89,7 @@ impl Environment {
         let tail_upper = resolved_tail.to_uppercase();
 
         let scope = self.current_scope_mut();
-        let stem_var = scope
-            .stems
-            .entry(stem_upper)
-            .or_insert_with(StemVar::new);
+        let stem_var = scope.stems.entry(stem_upper).or_insert_with(StemVar::new);
         stem_var.entries.insert(tail_upper, value);
     }
 
@@ -100,10 +97,7 @@ impl Environment {
     pub fn set_stem_default(&mut self, stem: &str, value: RexxValue) {
         let stem_upper = format!("{}.", stem.to_uppercase());
         let scope = self.current_scope_mut();
-        let stem_var = scope
-            .stems
-            .entry(stem_upper)
-            .or_insert_with(StemVar::new);
+        let stem_var = scope.stems.entry(stem_upper).or_insert_with(StemVar::new);
         stem_var.default = Some(value);
     }
 

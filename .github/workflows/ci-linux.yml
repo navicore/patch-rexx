@@ -1,0 +1,47 @@
+name: CI - Linux
+
+on:
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  ci-linux:
+    name: CI - Linux x86_64
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: 1.93.0
+        components: rustfmt, clippy
+
+    - name: Verify Rust version
+      run: rustc --version && cargo --version && cargo clippy --version
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: linux-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: linux-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Check formatting
+      run: cargo fmt -- --check
+
+    - name: Clippy (deny warnings)
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Build
+      run: cargo build --all-targets
+
+    - name: Test
+      run: cargo test

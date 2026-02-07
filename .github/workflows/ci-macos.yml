@@ -1,0 +1,57 @@
+name: CI - macOS
+
+on:
+  push:
+    branches: [ main ]
+
+# CI Strategy:
+# - Linux: Runs on every PR for fast feedback (see ci-linux.yml)
+# - macOS: Runs only on merge to main
+
+jobs:
+  ci-macos:
+    name: CI - macOS ARM64
+    runs-on: macos-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: 1.93.0
+        components: rustfmt, clippy
+
+    - name: Verify Rust version
+      run: rustc --version && cargo --version && cargo clippy --version
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: macos-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: macos-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: macos-cargo-build-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Check formatting
+      run: cargo fmt -- --check
+
+    - name: Clippy (deny warnings)
+      run: cargo clippy --all-targets -- -D warnings
+
+    - name: Build
+      run: cargo build --all-targets
+
+    - name: Test
+      run: cargo test

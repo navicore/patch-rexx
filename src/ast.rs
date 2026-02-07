@@ -25,22 +25,16 @@ pub enum ClauseKind {
     Label(String),
 
     /// Variable assignment: `symbol = expr`
-    Assignment {
-        target: AssignTarget,
-        expr: Expr,
-    },
+    Assignment { target: AssignTarget, expr: Expr },
 
     /// SAY expr
     Say(Expr),
 
     /// CALL routine [args...]
-    Call {
-        name: String,
-        args: Vec<Expr>,
-    },
+    Call { name: String, args: Vec<Expr> },
 
     /// DO block (many variants)
-    Do(DoBlock),
+    Do(Box<DoBlock>),
 
     /// IF expr THEN clause [ELSE clause]
     If {
@@ -155,15 +149,19 @@ pub enum DoKind {
     /// DO UNTIL expr; ... END
     Until(Expr),
     /// DO var = start TO end [BY step] [FOR count]; ... END
-    Controlled {
-        var: String,
-        start: Expr,
-        to: Option<Expr>,
-        by: Option<Expr>,
-        r#for: Option<Expr>,
-        while_cond: Option<Expr>,
-        until_cond: Option<Expr>,
-    },
+    Controlled(Box<ControlledLoop>),
+}
+
+/// Controlled DO loop parameters.
+#[derive(Debug, Clone)]
+pub struct ControlledLoop {
+    pub var: String,
+    pub start: Expr,
+    pub to: Option<Expr>,
+    pub by: Option<Expr>,
+    pub r#for: Option<Expr>,
+    pub while_cond: Option<Expr>,
+    pub until_cond: Option<Expr>,
 }
 
 /// PARSE sources.
@@ -258,10 +256,7 @@ pub enum AddressAction {
     /// ADDRESS environment — set default
     SetEnvironment(String),
     /// ADDRESS environment command — one-shot
-    Temporary {
-        environment: String,
-        command: Expr,
-    },
+    Temporary { environment: String, command: Expr },
     /// ADDRESS VALUE expr — dynamic environment name
     Value(Expr),
 }
@@ -287,15 +282,9 @@ pub enum Expr {
         right: Box<Expr>,
     },
     /// Unary prefix operation
-    UnaryOp {
-        op: UnaryOp,
-        operand: Box<Expr>,
-    },
+    UnaryOp { op: UnaryOp, operand: Box<Expr> },
     /// Function call: name(args)
-    FunctionCall {
-        name: String,
-        args: Vec<Expr>,
-    },
+    FunctionCall { name: String, args: Vec<Expr> },
     /// Parenthesized expression
     Paren(Box<Expr>),
 }
@@ -309,8 +298,8 @@ pub enum BinOp {
     IntDiv,
     Remainder,
     Power,
-    Concat,       // abuttal or ||
-    ConcatBlank,  // implicit blank concatenation
+    Concat,      // abuttal or ||
+    ConcatBlank, // implicit blank concatenation
 
     // Comparison
     Eq,

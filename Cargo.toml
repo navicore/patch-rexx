@@ -26,6 +26,23 @@ home = "0.5"
 [dev-dependencies]
 tempfile = "3"
 
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# Opinionated: enable pedantic by default, selectively allow the noisy ones
+pedantic = { level = "warn", priority = -1 }
+# These pedantic lints are too noisy for real code
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+# Nursery lints worth catching early
+redundant_clone = "warn"
+trait_duplication_in_bounds = "warn"
+uninhabited_references = "warn"
+unnecessary_fallible_conversions = "warn"
+
 [profile.release]
 opt-level = 3
 lto = true

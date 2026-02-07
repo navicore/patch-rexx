@@ -19,31 +19,31 @@ pub enum TokenKind {
     Minus,
     Star,
     Slash,
-    IntDiv,       // %
-    Remainder,    // //
-    Power,        // **
-    Concat,       // ||
-    Assign,       // =
+    IntDiv,    // %
+    Remainder, // //
+    Power,     // **
+    Concat,    // ||
+    Assign,    // =
 
     // Comparison
-    Equal,        // = (context-dependent, same char as Assign)
-    NotEqual,     // \= or <>
-    Greater,      // >
-    Less,         // <
-    GreaterEq,    // >= or \<
+    Equal,       // = (context-dependent, same char as Assign)
+    NotEqual,    // \= or <>
+    Greater,     // >
+    Less,        // <
+    GreaterEq,   // >= or \<
     LessEq,      // <= or \>
-    StrictEq,     // ==
-    StrictNotEq,  // \==
-    StrictGt,     // >>
-    StrictLt,     // <<
-    StrictGte,    // >>=
-    StrictLte,    // <<=
+    StrictEq,    // ==
+    StrictNotEq, // \==
+    StrictGt,    // >>
+    StrictLt,    // <<
+    StrictGte,   // >>=
+    StrictLte,   // <<=
 
     // Logical
-    And,          // &
-    Or,           // |
-    Xor,          // &&
-    Not,          // \ or ¬
+    And, // &
+    Or,  // |
+    Xor, // &&
+    Not, // \ or ¬
 
     // Delimiters
     LeftParen,
@@ -54,7 +54,7 @@ pub enum TokenKind {
     Dot,
 
     // Special
-    Eol,          // End of logical line (clause terminator)
+    Eol, // End of logical line (clause terminator)
     Eof,
 }
 
@@ -159,9 +159,7 @@ impl Lexer {
                 let mut depth = 1u32;
                 while depth > 0 {
                     if self.at_end() {
-                        return Err(
-                            RexxDiagnostic::new(RexxError::UnmatchedComment).at(loc.clone())
-                        );
+                        return Err(RexxDiagnostic::new(RexxError::UnmatchedComment).at(loc));
                     }
                     if self.peek() == Some('/') && self.peek_ahead(1) == Some('*') {
                         self.advance();
@@ -194,6 +192,7 @@ impl Lexer {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     fn next_token(&mut self) -> RexxResult<Token> {
         let loc = self.loc();
         let ch = self.peek().unwrap();
@@ -203,15 +202,18 @@ impl Lexer {
             '\'' | '"' => self.lex_string(ch),
 
             // Numbers
-            '0'..='9' => self.lex_number(),
+            '0'..='9' => Ok(self.lex_number()),
 
             // Symbols (identifiers, keywords — REXX has no reserved words)
-            'a'..='z' | 'A'..='Z' | '_' | '!' | '?' | '@' | '#' | '$' => self.lex_symbol(),
+            'a'..='z' | 'A'..='Z' | '_' | '!' | '?' | '@' | '#' | '$' => Ok(self.lex_symbol()),
 
             // Dot can start a symbol or be standalone
             '.' => {
-                if self.peek_ahead(1).is_some_and(|c| c.is_alphanumeric() || c == '_') {
-                    self.lex_symbol()
+                if self
+                    .peek_ahead(1)
+                    .is_some_and(|c| c.is_alphanumeric() || c == '_')
+                {
+                    Ok(self.lex_symbol())
                 } else {
                     self.advance();
                     Ok(Token::new(TokenKind::Dot, loc))
@@ -356,7 +358,7 @@ impl Lexer {
             }
             _ => Err(RexxDiagnostic::new(RexxError::InvalidCharacter)
                 .at(loc)
-                .with_detail(format!("unexpected character '{}'", ch))),
+                .with_detail(format!("unexpected character '{ch}'"))),
         }
     }
 
@@ -413,7 +415,7 @@ impl Lexer {
         Ok(Token::new(TokenKind::StringLit(value), loc))
     }
 
-    fn lex_number(&mut self) -> RexxResult<Token> {
+    fn lex_number(&mut self) -> Token {
         let loc = self.loc();
         let mut num = String::new();
 
@@ -442,16 +444,22 @@ impl Lexer {
             }
         }
 
-        Ok(Token::new(TokenKind::Number(num), loc))
+        Token::new(TokenKind::Number(num), loc)
     }
 
-    fn lex_symbol(&mut self) -> RexxResult<Token> {
+    fn lex_symbol(&mut self) -> Token {
         let loc = self.loc();
         let mut name = String::new();
 
         while let Some(ch) = self.peek() {
-            if ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '!'
-                || ch == '?' || ch == '@' || ch == '#' || ch == '$'
+            if ch.is_alphanumeric()
+                || ch == '_'
+                || ch == '.'
+                || ch == '!'
+                || ch == '?'
+                || ch == '@'
+                || ch == '#'
+                || ch == '$'
             {
                 name.push(ch);
                 self.advance();
@@ -460,20 +468,20 @@ impl Lexer {
             }
         }
 
-        Ok(Token::new(TokenKind::Symbol(name), loc))
+        Token::new(TokenKind::Symbol(name), loc)
     }
 }
 
 /// Convert a hex string like "48 65 6C" to characters.
 fn hex_string_to_chars(s: &str) -> Result<String, String> {
     let hex: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if hex.len() % 2 != 0 {
+    if !hex.len().is_multiple_of(2) {
         return Err("odd number of hex digits".into());
     }
     let mut result = String::new();
     for i in (0..hex.len()).step_by(2) {
         let byte = u8::from_str_radix(&hex[i..i + 2], 16)
-            .map_err(|_| format!("invalid hex digit at position {}", i))?;
+            .map_err(|_| format!("invalid hex digit at position {i}"))?;
         result.push(byte as char);
     }
     Ok(result)
@@ -482,13 +490,13 @@ fn hex_string_to_chars(s: &str) -> Result<String, String> {
 /// Convert a binary string like "0100 1000" to characters.
 fn bin_string_to_chars(s: &str) -> Result<String, String> {
     let bits: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if bits.len() % 8 != 0 {
+    if !bits.len().is_multiple_of(8) {
         return Err("binary string length must be a multiple of 8".into());
     }
     let mut result = String::new();
     for i in (0..bits.len()).step_by(8) {
         let byte = u8::from_str_radix(&bits[i..i + 8], 2)
-            .map_err(|_| format!("invalid binary digit at position {}", i))?;
+            .map_err(|_| format!("invalid binary digit at position {i}"))?;
         result.push(byte as char);
     }
     Ok(result)

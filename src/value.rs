@@ -59,13 +59,13 @@ impl RexxValue {
             Some(d) => {
                 let rounded = d.round(0);
                 let diff = (&d - &rounded).abs();
-                diff < BigDecimal::from_str(&format!("1E-{}", digits)).unwrap_or(BigDecimal::from(0))
+                diff < BigDecimal::from_str(&format!("1E-{digits}")).unwrap_or(BigDecimal::from(0))
             }
             None => false,
         }
     }
 
-    /// Format a BigDecimal according to REXX numeric formatting rules.
+    /// Format a `BigDecimal` according to REXX numeric formatting rules.
     /// Respects NUMERIC DIGITS and NUMERIC FORM (SCIENTIFIC vs ENGINEERING).
     pub fn from_decimal(d: &BigDecimal, digits: u32, form: NumericForm) -> Self {
         let formatted = format_rexx_number(d, digits, form);
@@ -98,18 +98,13 @@ impl From<i64> for RexxValue {
 }
 
 /// NUMERIC FORM controls exponential notation style.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NumericForm {
     /// Exponent is a multiple of 1 (default).
+    #[default]
     Scientific,
     /// Exponent is a multiple of 3.
     Engineering,
-}
-
-impl Default for NumericForm {
-    fn default() -> Self {
-        Self::Scientific
-    }
 }
 
 /// Numeric settings for the current execution context.
@@ -133,13 +128,13 @@ impl Default for NumericSettings {
     }
 }
 
-/// Format a BigDecimal to a REXX-compliant string representation.
+/// Format a `BigDecimal` to a REXX-compliant string representation.
 fn format_rexx_number(d: &BigDecimal, digits: u32, form: NumericForm) -> String {
     // TODO: full REXX numeric formatting with exponential notation,
     // NUMERIC DIGITS truncation, and ENGINEERING form support.
     // For now, use a basic representation.
     let _ = form;
-    let rounded = d.round(digits as i64);
+    let rounded = d.round(i64::from(digits));
     let s = rounded.to_string();
     // REXX strips trailing zeros after decimal point
     if s.contains('.') {

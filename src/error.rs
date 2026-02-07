@@ -116,7 +116,7 @@ pub enum RexxError {
 
 impl RexxError {
     /// The REXX error number per the ANSI spec.
-    pub fn number(&self) -> u32 {
+    pub fn number(self) -> u32 {
         match self {
             Self::Halt => 4,
             Self::ResourceExhausted => 5,
@@ -161,7 +161,7 @@ impl RexxError {
     }
 
     /// Standard REXX error message text.
-    pub fn message(&self) -> &'static str {
+    pub fn message(self) -> &'static str {
         match self {
             Self::Halt => "Program interrupted",
             Self::ResourceExhausted => "System resources exhausted",
@@ -244,13 +244,13 @@ impl fmt::Display for RexxDiagnostic {
         )?;
 
         if let Some(ref detail) = self.detail {
-            write!(f, ": {}", detail)?;
+            write!(f, ": {detail}")?;
         }
 
         if let Some(ref loc) = self.location {
             write!(f, "\n  at line {}, column {}", loc.line, loc.col)?;
             if let Some(ref source) = loc.source_line {
-                write!(f, "\n  | {}", source)?;
+                write!(f, "\n  | {source}")?;
                 write!(f, "\n  | {:>width$}", "^", width = loc.col)?;
             }
         }

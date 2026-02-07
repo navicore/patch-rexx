@@ -1,3 +1,6 @@
+// TODO: remove once parser and evaluator wire everything together
+#![allow(dead_code)]
+
 mod ast;
 mod env;
 mod error;
@@ -57,20 +60,23 @@ fn run_source(source: &str, _args: &[String]) {
             }
         }
         Err(e) => {
-            eprintln!("{}", e);
+            eprintln!("{e}");
             std::process::exit(1);
         }
     }
 }
 
 fn run_repl() {
-    println!("patch-rexx {} — interactive mode", env!("CARGO_PKG_VERSION"));
+    println!(
+        "patch-rexx {} — interactive mode",
+        env!("CARGO_PKG_VERSION")
+    );
     println!("Type REXX statements. Use EXIT to quit.\n");
 
     let mut rl = match rustyline::DefaultEditor::new() {
         Ok(rl) => rl,
         Err(e) => {
-            eprintln!("patch-rexx: cannot initialize line editor: {}", e);
+            eprintln!("patch-rexx: cannot initialize line editor: {e}");
             std::process::exit(1);
         }
     };
@@ -91,13 +97,12 @@ fn run_repl() {
                 run_source(trimmed, &[]);
             }
             Err(
-                rustyline::error::ReadlineError::Interrupted
-                | rustyline::error::ReadlineError::Eof,
+                rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof,
             ) => {
                 break;
             }
             Err(e) => {
-                eprintln!("patch-rexx: {}", e);
+                eprintln!("patch-rexx: {e}");
                 break;
             }
         }
