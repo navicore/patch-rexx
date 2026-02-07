@@ -158,7 +158,26 @@ Goal: REXX's built-in tracing — one of its best features.
 
 Milestone: interactive debugging of REXX programs from within the interpreter.
 
-## Phase 10 — External Function Libraries
+## Phase 10 — Language Server (LSP)
+
+Goal: full editor integration via Language Server Protocol.
+
+Uses tower-lsp + lsp-types (same stack as the Seq LSP in patch-seq).
+
+- [ ] Diagnostics — parse errors and runtime warnings with source locations
+- [ ] Completion — keywords, built-in functions, variables in scope, stem names
+- [ ] Hover — show variable values, function signatures, BIF documentation
+- [ ] Go to Definition — jump to labels, internal subroutine definitions
+- [ ] Document Symbols — outline of labels, subroutines, PROCEDURE blocks
+- [ ] Code Actions — quick fixes for common errors (typo suggestions, missing END)
+- [ ] Inlay Hints — show PARSE template field assignments, numeric precision
+
+REXX "doesn't need tooling" the way Cowlishaw designed it — TRACE was the IDE.
+But modern editors with inline diagnostics and completion make every language better.
+
+Milestone: `patch-rexx-lsp` binary, Neovim plugin (following patch-seq.nvim pattern).
+
+## Phase 11 — External Function Libraries
 
 Goal: extensibility.
 
@@ -166,7 +185,7 @@ Goal: extensibility.
 - [ ] Search order: internal → built-in → external
 - [ ] REXXPATH or similar search path mechanism
 
-## Phase 11 — Polish and Distribution
+## Phase 12 — Polish and Distribution
 
 - [ ] Static binary builds (musl on Linux, native on macOS)
 - [ ] Cross-compilation targets (Linux amd64/arm64, macOS, Windows)

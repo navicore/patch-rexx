@@ -47,7 +47,9 @@ Early development. The foundation is in place:
 | Parser | Not yet started |
 | Evaluator | Not yet started |
 
-See [ROADMAP.md](ROADMAP.md) for the full development plan.
+The roadmap includes a full Language Server (LSP) for editor integration -- diagnostics, completion, hover, go-to-definition -- using the same tower-lsp stack as [patch-seq](https://github.com/navicore/patch-seq).
+
+See [ROADMAP.md](ROADMAP.md) for the full 12-phase development plan.
 
 ---
 
