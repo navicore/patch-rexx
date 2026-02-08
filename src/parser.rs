@@ -155,7 +155,7 @@ impl Parser {
         let name = if let TokenKind::Symbol(s) = self.peek_kind() {
             s.clone()
         } else {
-            unreachable!()
+            unreachable!("parse_assignment called on non-symbol token")
         };
         self.advance(); // symbol
         self.advance(); // =

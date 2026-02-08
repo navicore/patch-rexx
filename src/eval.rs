@@ -5,7 +5,6 @@
 //! against an `Environment`.
 
 use bigdecimal::{BigDecimal, Zero};
-use num_bigint::BigInt;
 use std::str::FromStr;
 
 use crate::ast::{AssignTarget, BinOp, Clause, ClauseKind, Expr, Program, TailElement, UnaryOp};
@@ -168,12 +167,15 @@ impl<'a> Evaluator<'a> {
                     return Err(RexxDiagnostic::new(RexxError::ArithmeticOverflow)
                         .with_detail("division by zero"));
                 }
-                let a_int = a.to_string().split('.').next().unwrap_or("0").to_string();
-                let b_int = b.to_string().split('.').next().unwrap_or("0").to_string();
-                let ai = BigInt::from_str(&a_int).unwrap_or_default();
-                let bi = BigInt::from_str(&b_int).unwrap_or_default();
-                let result = &ai / &bi;
-                Ok(RexxValue::new(result.to_string()))
+                // Truncate both operands to whole numbers, then divide
+                let ai = a.round(0);
+                let bi = b.round(0);
+                let result = (ai / bi).round(0);
+                Ok(RexxValue::from_decimal(
+                    &result,
+                    self.settings.digits,
+                    self.settings.form,
+                ))
             }
             BinOp::Remainder => {
                 let a = self.to_number(left)?;
@@ -357,20 +359,6 @@ mod tests {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
-    /// Helper: run source, return what was printed to stdout.
-    /// We capture by redirecting the evaluator's `say` output.
-    fn eval_and_capture(src: &str) -> String {
-        let mut env = Environment::new();
-        let mut lexer = Lexer::new(src);
-        let tokens = lexer.tokenize().unwrap();
-        let mut parser = Parser::new(tokens);
-        let program = parser.parse().unwrap();
-        let mut eval = Evaluator::new(&mut env);
-        // We can't easily capture println, so we'll test via the eval result.
-        eval.exec(&program).unwrap();
-        String::new()
-    }
-
     fn eval_expr(src: &str) -> RexxValue {
         let mut env = Environment::new();
         let mut lexer = Lexer::new(src);
@@ -517,7 +505,13 @@ mod tests {
     #[test]
     fn eval_say_runs() {
         // Smoke test — just ensure it doesn't panic
-        eval_and_capture("say 2 + 3");
+        let mut env = Environment::new();
+        let mut lexer = Lexer::new("say 2 + 3");
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env);
+        eval.exec(&program).unwrap();
     }
 
     #[test]
