@@ -2,22 +2,10 @@ name: Claude Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize, ready_for_review, reopened]
-    # Optional: Only run on specific file changes
-    # paths:
-    #   - "src/**/*.ts"
-    #   - "src/**/*.tsx"
-    #   - "src/**/*.js"
-    #   - "src/**/*.jsx"
+    types: [opened, synchronize]
 
 jobs:
   claude-review:
-    # Optional: Filter by PR author
-    # if: |
-    #   github.event.pull_request.user.login == 'external-contributor' ||
-    #   github.event.pull_request.user.login == 'new-developer' ||
-    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
-
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,9 +24,28 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
-          plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
-          # or https://code.claude.com/docs/en/cli-reference for available options
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
 
+            Review this pull request for a REXX language interpreter written in Rust.
+
+            Focus on:
+            - Correctness: parser edge cases, operator precedence, REXX semantics (ANSI X3.274-1996)
+            - Arithmetic: BigDecimal usage, division by zero, numeric formatting, NUMERIC DIGITS compliance
+            - Error handling: correct REXX error numbers (Error 41 = bad arithmetic, 42 = overflow, etc.), proper propagation
+            - REXX semantics: "everything is a string", unset variables return uppercase name, no reserved words, case-insensitive keywords
+            - Performance: unnecessary clones, per-evaluation allocations, quadratic string ops
+            - Safety: no panics on malformed input, unterminated strings, deep nesting
+            - Test coverage for parser and evaluator paths
+
+            Do NOT flag:
+            - Style nits or formatting (clippy pedantic handles this)
+            - Missing documentation or comments
+            - Naming preferences
+
+            Use the repository's CLAUDE.md for project conventions. Only report issues you are confident about. Be specific — cite file paths and line numbers.
+
+            Use `gh pr comment` with your Bash tool to leave your review as a comment on the PR.
+
+          claude_args: '--allowed-tools "Bash(gh issue view:*),Bash(gh search:*),Bash(gh issue list:*),Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*)"'
