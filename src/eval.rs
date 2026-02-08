@@ -5,11 +5,12 @@
 //! against an `Environment`.
 
 use bigdecimal::{BigDecimal, Zero};
+use std::collections::HashMap;
 use std::str::FromStr;
 
 use crate::ast::{
-    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, Program,
-    TailElement, UnaryOp,
+    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, ParseTemplate,
+    Program, TailElement, TemplateElement, UnaryOp,
 };
 use crate::env::Environment;
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
@@ -24,22 +25,69 @@ pub enum ExecSignal {
     Return(Option<RexxValue>),
 }
 
-pub struct Evaluator<'a> {
-    env: &'a mut Environment,
-    settings: NumericSettings,
+/// Pending EXIT state — distinguishes "no pending exit" from "exit with/without value".
+enum PendingExit {
+    None,
+    WithValue(Option<RexxValue>),
 }
 
-impl<'a> Evaluator<'a> {
-    pub fn new(env: &'a mut Environment) -> Self {
-        Self {
-            env,
-            settings: NumericSettings::default(),
+impl PendingExit {
+    /// If an EXIT is pending, take the value and reset to `None`.
+    /// Returns the exit value wrapped in `ExecSignal::Exit` for immediate propagation.
+    fn take_signal(&mut self) -> Option<ExecSignal> {
+        match std::mem::replace(self, PendingExit::None) {
+            PendingExit::None => Option::None,
+            PendingExit::WithValue(v) => Some(ExecSignal::Exit(v)),
         }
     }
 
-    pub fn exec(&mut self, program: &Program) -> RexxResult<ExecSignal> {
-        for clause in &program.clauses {
+    const fn is_pending(&self) -> bool {
+        matches!(self, PendingExit::WithValue(_))
+    }
+}
+
+pub struct Evaluator<'a> {
+    env: &'a mut Environment,
+    program: &'a Program,
+    settings: NumericSettings,
+    labels: HashMap<String, usize>,
+    arg_stack: Vec<Vec<RexxValue>>,
+    pending_exit: PendingExit,
+}
+
+impl<'a> Evaluator<'a> {
+    pub fn new(env: &'a mut Environment, program: &'a Program) -> Self {
+        let labels = Self::build_labels(program);
+        Self {
+            env,
+            program,
+            settings: NumericSettings::default(),
+            labels,
+            arg_stack: Vec::new(),
+            pending_exit: PendingExit::None,
+        }
+    }
+
+    fn build_labels(program: &Program) -> HashMap<String, usize> {
+        let mut labels = HashMap::new();
+        for (i, clause) in program.clauses.iter().enumerate() {
+            if let ClauseKind::Label(name) = &clause.kind {
+                labels.entry(name.clone()).or_insert(i);
+            }
+        }
+        labels
+    }
+
+    pub fn exec(&mut self) -> RexxResult<ExecSignal> {
+        self.exec_from(0)
+    }
+
+    fn exec_from(&mut self, start: usize) -> RexxResult<ExecSignal> {
+        for clause in &self.program.clauses[start..] {
             let signal = self.exec_clause(clause)?;
+            if let Some(signal) = self.pending_exit.take_signal() {
+                return Ok(signal);
+            }
             if !matches!(signal, ExecSignal::Normal) {
                 return Ok(signal);
             }
@@ -50,6 +98,9 @@ impl<'a> Evaluator<'a> {
     fn exec_body(&mut self, body: &[Clause]) -> RexxResult<ExecSignal> {
         for clause in body {
             let signal = self.exec_clause(clause)?;
+            if let Some(signal) = self.pending_exit.take_signal() {
+                return Ok(signal);
+            }
             if !matches!(signal, ExecSignal::Normal) {
                 return Ok(signal);
             }
@@ -61,6 +112,9 @@ impl<'a> Evaluator<'a> {
         match &clause.kind {
             ClauseKind::Say(expr) => {
                 let val = self.eval_expr(expr)?;
+                if self.pending_exit.is_pending() {
+                    return Ok(ExecSignal::Normal);
+                }
                 println!("{val}");
                 Ok(ExecSignal::Normal)
             }
@@ -110,11 +164,103 @@ impl<'a> Evaluator<'a> {
                 };
                 Ok(ExecSignal::Return(val))
             }
+            ClauseKind::Call { name, args } => self.exec_call(name, args),
+            ClauseKind::Label(_) | ClauseKind::Nop => Ok(ExecSignal::Normal),
+            ClauseKind::Procedure(_) => Err(RexxDiagnostic::new(RexxError::UnexpectedProcedure)
+                .with_detail("PROCEDURE must be the first instruction in a called routine")),
+            ClauseKind::Drop(names) => {
+                for name in names {
+                    self.env.drop(name);
+                }
+                Ok(ExecSignal::Normal)
+            }
+            ClauseKind::Arg(template) => Ok(self.exec_arg(template)),
             _ => {
-                // Label, Nop, and other clause types not yet implemented
+                // Other clause types not yet implemented
                 Ok(ExecSignal::Normal)
             }
         }
+    }
+
+    fn call_routine(&mut self, name: &str, args: Vec<RexxValue>) -> RexxResult<ExecSignal> {
+        let &label_idx = self.labels.get(name).ok_or_else(|| {
+            RexxDiagnostic::new(RexxError::RoutineNotFound)
+                .with_detail(format!("routine '{name}' not found"))
+        })?;
+
+        let start_idx = label_idx + 1; // skip the label clause itself
+        self.arg_stack.push(args);
+
+        // Check if first clause after label is PROCEDURE — consume it before executing body
+        let has_procedure = matches!(
+            self.program.clauses.get(start_idx).map(|c| &c.kind),
+            Some(ClauseKind::Procedure(_))
+        );
+
+        let exec_start = if has_procedure {
+            match &self.program.clauses[start_idx].kind {
+                ClauseKind::Procedure(Some(names)) => self.env.push_procedure_expose(names),
+                ClauseKind::Procedure(None) => self.env.push_procedure(),
+                _ => unreachable!(),
+            }
+            start_idx + 1
+        } else {
+            start_idx
+        };
+
+        let result = self.exec_from(exec_start);
+
+        if has_procedure {
+            self.env.pop_procedure();
+        }
+        self.arg_stack.pop();
+
+        result
+    }
+
+    fn exec_call(&mut self, name: &str, arg_exprs: &[Expr]) -> RexxResult<ExecSignal> {
+        let mut args = Vec::with_capacity(arg_exprs.len());
+        for expr in arg_exprs {
+            args.push(self.eval_expr(expr)?);
+            if let Some(signal) = self.pending_exit.take_signal() {
+                return Ok(signal);
+            }
+        }
+
+        let signal = self.call_routine(name, args)?;
+        match signal {
+            ExecSignal::Return(Some(val)) => {
+                self.env.set("RESULT", val);
+                Ok(ExecSignal::Normal)
+            }
+            ExecSignal::Return(None) | ExecSignal::Normal => {
+                self.env.drop("RESULT");
+                Ok(ExecSignal::Normal)
+            }
+            ExecSignal::Exit(_) => Ok(signal),
+            ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(ExecSignal::Normal),
+        }
+    }
+
+    fn exec_arg(&mut self, template: &ParseTemplate) -> ExecSignal {
+        let args = self.arg_stack.last().cloned().unwrap_or_default();
+        let mut arg_idx = 0;
+        for element in &template.elements {
+            match element {
+                TemplateElement::Variable(name) => {
+                    let val = args.get(arg_idx).map_or_else(
+                        || RexxValue::new(""),
+                        |v| RexxValue::new(v.as_str().to_uppercase()),
+                    );
+                    self.env.set(name, val);
+                }
+                TemplateElement::Comma => {
+                    arg_idx += 1;
+                }
+                _ => {} // ignore patterns/positions — Phase 4
+            }
+        }
+        ExecSignal::Normal
     }
 
     fn exec_if(
@@ -451,8 +597,28 @@ impl<'a> Evaluator<'a> {
                 let rval = self.eval_expr(right)?;
                 self.eval_binop(*op, &lval, &rval)
             }
-            Expr::FunctionCall { name, .. } => Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
-                .with_detail(format!("routine '{name}' not found"))),
+            Expr::FunctionCall { name, args } => {
+                let mut evaluated_args = Vec::with_capacity(args.len());
+                for arg_expr in args {
+                    evaluated_args.push(self.eval_expr(arg_expr)?);
+                    if self.pending_exit.is_pending() {
+                        return Ok(RexxValue::new(""));
+                    }
+                }
+                let signal = self.call_routine(name, evaluated_args)?;
+                match signal {
+                    ExecSignal::Return(Some(val)) => Ok(val),
+                    ExecSignal::Return(None) | ExecSignal::Normal => {
+                        Err(RexxDiagnostic::new(RexxError::NoReturnData)
+                            .with_detail(format!("function '{name}' did not return data")))
+                    }
+                    ExecSignal::Exit(val) => {
+                        self.pending_exit = PendingExit::WithValue(val);
+                        Ok(RexxValue::new(""))
+                    }
+                    ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
+                }
+            }
         }
     }
 
@@ -743,7 +909,7 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let program = parser.parse().unwrap();
-        let mut eval = Evaluator::new(&mut env);
+        let mut eval = Evaluator::new(&mut env, &program);
         // Evaluate as command and extract the value
         match &program.clauses[0].kind {
             ClauseKind::Command(expr) => eval.eval_expr(expr).unwrap(),
@@ -788,7 +954,7 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let program = parser.parse().unwrap();
-        let mut eval = Evaluator::new(&mut env);
+        let mut eval = Evaluator::new(&mut env, &program);
         match &program.clauses[0].kind {
             ClauseKind::Command(expr) => {
                 let result = eval.eval_expr(expr);
@@ -868,8 +1034,8 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let program = parser.parse().unwrap();
-        let mut eval = Evaluator::new(&mut env);
-        let signal = eval.exec(&program).unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        let signal = eval.exec().unwrap();
         assert!(matches!(signal, ExecSignal::Normal));
         // After execution, x should be "42" and the command clause evaluated "43"
         assert_eq!(env.get("X").as_str(), "42");
@@ -889,8 +1055,8 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let program = parser.parse().unwrap();
-        let mut eval = Evaluator::new(&mut env);
-        let signal = eval.exec(&program).unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        let signal = eval.exec().unwrap();
         assert!(matches!(signal, ExecSignal::Normal));
     }
 
