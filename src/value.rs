@@ -4,8 +4,9 @@
 //! to be valid numeric representations. This module implements the core value
 //! type and REXX's decimal arithmetic model (NUMERIC DIGITS / FORM / FUZZ).
 
-use bigdecimal::BigDecimal;
+use bigdecimal::{BigDecimal, RoundingMode, Signed};
 use std::fmt;
+use std::num::NonZeroU64;
 use std::str::FromStr;
 
 /// Every REXX value is a string. Numeric operations interpret the string
@@ -129,20 +130,93 @@ impl Default for NumericSettings {
 }
 
 /// Format a `BigDecimal` to a REXX-compliant string representation.
+/// Rounds to NUMERIC DIGITS significant digits (not decimal places),
+/// then chooses plain or exponential notation based on the adjusted exponent.
+#[allow(clippy::cast_possible_wrap)]
 fn format_rexx_number(d: &BigDecimal, digits: u32, form: NumericForm) -> String {
-    // TODO: full REXX numeric formatting with exponential notation,
-    // NUMERIC DIGITS truncation, and ENGINEERING form support.
-    // For now, use a basic representation.
-    let _ = form;
-    let rounded = d.round(i64::from(digits));
-    let s = rounded.to_string();
-    // REXX strips trailing zeros after decimal point
-    if s.contains('.') {
-        let s = s.trim_end_matches('0');
-        let s = s.trim_end_matches('.');
-        s.to_string()
+    use bigdecimal::num_bigint::Sign;
+
+    if d.sign() == Sign::NoSign {
+        return "0".to_string();
+    }
+
+    let prec = NonZeroU64::new(u64::from(digits)).unwrap_or(NonZeroU64::MIN);
+    let rounded = d.with_precision_round(prec, RoundingMode::HalfUp);
+    let normed = rounded.normalized();
+    let (coeff, scale) = normed.as_bigint_and_exponent();
+    let is_negative = coeff.sign() == Sign::Minus;
+    let coeff_str = coeff.abs().to_string();
+    // Safe: coefficient length is bounded by NUMERIC DIGITS (≤ u32::MAX)
+    let n = coeff_str.len() as i64;
+
+    // Adjusted exponent: the power of 10 of the leading digit.
+    // value = coeff × 10^(−scale), in scientific form: d.ddd × 10^adj_exp
+    let adj_exp = n - 1 - scale;
+
+    // REXX uses plain notation when the adjusted exponent is in range:
+    //   non-negative and < 2×DIGITS, or negative and >= −DIGITS.
+    // Beyond that range, exponential notation is used.
+    let use_plain = if adj_exp >= 0 {
+        adj_exp < i64::from(digits) * 2
     } else {
-        s
+        adj_exp >= -i64::from(digits)
+    };
+
+    let sign = if is_negative { "-" } else { "" };
+
+    if use_plain {
+        format!("{sign}{}", format_plain(&coeff_str, adj_exp))
+    } else {
+        format!("{sign}{}", format_exp(&coeff_str, adj_exp, form))
+    }
+}
+
+/// Format a number in plain (non-exponential) notation.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn format_plain(coeff: &str, adj_exp: i64) -> String {
+    let n = coeff.len() as i64;
+    if adj_exp >= n - 1 {
+        // Pure integer — append trailing zeros
+        let trailing = (adj_exp - n + 1) as usize;
+        format!("{coeff}{}", "0".repeat(trailing))
+    } else if adj_exp >= 0 {
+        // Decimal point falls within the digits
+        let split = (adj_exp + 1) as usize;
+        format!("{}.{}", &coeff[..split], &coeff[split..])
+    } else {
+        // Number < 1 — prepend leading zeros after "0."
+        let leading = (-adj_exp - 1) as usize;
+        format!("0.{}{coeff}", "0".repeat(leading))
+    }
+}
+
+/// Format a number in exponential notation (SCIENTIFIC or ENGINEERING).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn format_exp(coeff: &str, adj_exp: i64, form: NumericForm) -> String {
+    let (digits_before, exp) = match form {
+        NumericForm::Scientific => (1usize, adj_exp),
+        NumericForm::Engineering => {
+            let e = adj_exp - adj_exp.rem_euclid(3);
+            ((adj_exp - e + 1) as usize, e)
+        }
+    };
+
+    let n = coeff.len();
+    let mantissa = if digits_before >= n {
+        let padding = digits_before - n;
+        format!("{coeff}{}", "0".repeat(padding))
+    } else {
+        format!("{}.{}", &coeff[..digits_before], &coeff[digits_before..])
+    };
+
+    if exp >= 0 {
+        format!("{mantissa}E+{exp}")
+    } else {
+        format!("{mantissa}E{exp}")
     }
 }
 
@@ -189,5 +263,102 @@ mod tests {
         assert_eq!(settings.digits, 9);
         assert_eq!(settings.fuzz, 0);
         assert_eq!(settings.form, NumericForm::Scientific);
+    }
+
+    // ── format_rexx_number tests ──────────────────────────────────
+
+    #[test]
+    fn format_integer() {
+        let d = BigDecimal::from(42);
+        assert_eq!(format_rexx_number(&d, 9, NumericForm::Scientific), "42");
+    }
+
+    #[test]
+    fn format_decimal() {
+        let d = BigDecimal::from_str("3.14").unwrap();
+        assert_eq!(format_rexx_number(&d, 9, NumericForm::Scientific), "3.14");
+    }
+
+    #[test]
+    fn format_zero() {
+        let d = BigDecimal::from(0);
+        assert_eq!(format_rexx_number(&d, 9, NumericForm::Scientific), "0");
+    }
+
+    #[test]
+    fn format_negative() {
+        let d = BigDecimal::from(-42);
+        assert_eq!(format_rexx_number(&d, 9, NumericForm::Scientific), "-42");
+    }
+
+    #[test]
+    fn format_significant_digit_rounding() {
+        // 123456789.5 rounded to 9 significant digits → 123456790
+        let d = BigDecimal::from_str("123456789.5").unwrap();
+        assert_eq!(
+            format_rexx_number(&d, 9, NumericForm::Scientific),
+            "123456790"
+        );
+    }
+
+    #[test]
+    fn format_large_plain() {
+        // 10^17 has adjusted exponent 17, within 2×9=18 threshold → plain
+        let d = BigDecimal::from_str("1E17").unwrap();
+        assert_eq!(
+            format_rexx_number(&d, 9, NumericForm::Scientific),
+            "100000000000000000"
+        );
+    }
+
+    #[test]
+    fn format_large_exponential() {
+        // 10^18 has adjusted exponent 18, equals 2×9 → exponential
+        let d = BigDecimal::from_str("1E18").unwrap();
+        assert_eq!(format_rexx_number(&d, 9, NumericForm::Scientific), "1E+18");
+    }
+
+    #[test]
+    fn format_small_plain() {
+        // 10^-9 has adjusted exponent -9, equals -DIGITS → plain
+        let d = BigDecimal::from_str("1E-9").unwrap();
+        assert_eq!(
+            format_rexx_number(&d, 9, NumericForm::Scientific),
+            "0.000000001"
+        );
+    }
+
+    #[test]
+    fn format_small_exponential() {
+        // adjusted exponent -10, below -DIGITS → exponential
+        let d = BigDecimal::from_str("1.23E-10").unwrap();
+        assert_eq!(
+            format_rexx_number(&d, 9, NumericForm::Scientific),
+            "1.23E-10"
+        );
+    }
+
+    #[test]
+    fn format_engineering_form() {
+        let d = BigDecimal::from_str("1.23E20").unwrap();
+        assert_eq!(
+            format_rexx_number(&d, 9, NumericForm::Engineering),
+            "123E+18"
+        );
+    }
+
+    #[test]
+    fn format_trailing_zeros_stripped() {
+        let d = BigDecimal::from_str("5.00").unwrap();
+        assert_eq!(format_rexx_number(&d, 9, NumericForm::Scientific), "5");
+    }
+
+    #[test]
+    fn format_negative_exponential() {
+        let d = BigDecimal::from_str("-1.5E20").unwrap();
+        assert_eq!(
+            format_rexx_number(&d, 9, NumericForm::Scientific),
+            "-1.5E+20"
+        );
     }
 }
