@@ -237,3 +237,31 @@ fn if_then_across_lines() {
 fn if_else_across_lines() {
     assert_eq!(run_rexx("if 0\nthen say 'no'\nelse say 'yes'"), "yes");
 }
+
+// ── Edge cases from PR review ─────────────────────────────────
+
+#[test]
+fn zero_by_step_error() {
+    let stderr = run_rexx_fail("do i = 1 to 10 by 0; say i; end");
+    assert!(stderr.contains("BY value"));
+}
+
+#[test]
+fn negative_by_step() {
+    assert_eq!(
+        run_rexx("s = ''; do i = 5 to 1 by -1; s = s || i; end; say s"),
+        "54321"
+    );
+}
+
+#[test]
+fn large_exponent_error() {
+    let stderr = run_rexx_fail("say 2 ** 9999999999");
+    assert!(stderr.contains("exponent"));
+}
+
+#[test]
+fn negative_loop_count_error() {
+    let stderr = run_rexx_fail("do -3; say 'x'; end");
+    assert!(stderr.contains("negative"));
+}

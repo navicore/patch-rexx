@@ -276,6 +276,12 @@ impl<'a> Evaluator<'a> {
             BigDecimal::from(1)
         };
 
+        // REXX requires BY to be non-zero
+        if by_num.is_zero() {
+            return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                .with_detail("BY value in DO loop must not be zero"));
+        }
+
         // Evaluate FOR count
         let for_count = if let Some(ref for_expr) = ctrl.r#for {
             let v = self.eval_expr(for_expr)?;
@@ -343,15 +349,11 @@ impl<'a> Evaluator<'a> {
             }
 
             // Check UNTIL condition (after body)
+            // Per ANSI REXX, when UNTIL is satisfied the loop ends without
+            // incrementing the control variable.
             if let Some(ref until_expr) = ctrl.until_cond {
                 let v = self.eval_expr(until_expr)?;
                 if to_logical(&v)? {
-                    // Increment before breaking so variable is past the condition
-                    current += &by_num;
-                    self.env.set(
-                        &ctrl.var,
-                        RexxValue::from_decimal(&current, self.settings.digits, self.settings.form),
-                    );
                     break;
                 }
             }
@@ -409,10 +411,15 @@ impl<'a> Evaluator<'a> {
         let d = self.to_number(val)?;
         let rounded = d.round(0);
         let s = rounded.to_string();
-        s.parse::<i64>().map_err(|_| {
-            RexxDiagnostic::new(RexxError::InvalidWholeNumber)
-                .with_detail(format!("'{}' is not a valid whole number", val.as_str()))
-        })
+        let n = s.parse::<i64>().map_err(|_| {
+            RexxDiagnostic::new(RexxError::ArithmeticOverflow)
+                .with_detail(format!("'{rounded}' is too large for a loop count"))
+        })?;
+        if n < 0 {
+            return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                .with_detail(format!("loop count must not be negative (got {n})")));
+        }
+        Ok(n)
     }
 
     fn resolve_tail(&self, tail: &[TailElement]) -> String {
@@ -558,6 +565,10 @@ impl<'a> Evaluator<'a> {
                     RexxDiagnostic::new(RexxError::ArithmeticOverflow)
                         .with_detail("exponent too large")
                 })?;
+                if exp_i64.abs() > 999_999_999 {
+                    return Err(RexxDiagnostic::new(RexxError::ArithmeticOverflow)
+                        .with_detail("exponent exceeds limits"));
+                }
                 if base.is_zero() && exp_i64 < 0 {
                     return Err(RexxDiagnostic::new(RexxError::ArithmeticOverflow)
                         .with_detail("zero raised to a negative power"));
@@ -689,13 +700,9 @@ fn normal_compare(left: &RexxValue, right: &RexxValue) -> std::cmp::Ordering {
 /// REXX integer division: divide and truncate toward zero.
 fn trunc_div(a: &BigDecimal, b: &BigDecimal) -> BigDecimal {
     let quotient = a / b;
-    // Truncate toward zero (not round-half-even)
-    let s = quotient.to_string();
-    if let Some(dot) = s.find('.') {
-        BigDecimal::from_str(&s[..dot]).unwrap_or_default()
-    } else {
-        quotient
-    }
+    // Truncate toward zero using with_scale_round(0, Down).
+    // This avoids string-based truncation that can break on scientific notation.
+    quotient.with_scale_round(0, bigdecimal::RoundingMode::Down)
 }
 
 /// Compute base ** exp for `BigDecimal` with integer exponent.

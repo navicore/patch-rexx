@@ -144,8 +144,11 @@ impl Parser {
     /// implicit concatenation.
     fn is_do_header_keyword(&self) -> bool {
         if let TokenKind::Symbol(name) = self.peek_kind() {
-            let upper = name.to_uppercase();
-            matches!(upper.as_str(), "TO" | "BY" | "FOR" | "WHILE" | "UNTIL")
+            name.eq_ignore_ascii_case("TO")
+                || name.eq_ignore_ascii_case("BY")
+                || name.eq_ignore_ascii_case("FOR")
+                || name.eq_ignore_ascii_case("WHILE")
+                || name.eq_ignore_ascii_case("UNTIL")
         } else {
             false
         }
