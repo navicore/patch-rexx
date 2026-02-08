@@ -460,21 +460,47 @@ impl Parser {
         let mut while_cond: Option<Expr> = None;
         let mut until_cond: Option<Expr> = None;
 
-        // Parse optional TO/BY/FOR/WHILE/UNTIL in any order
+        // Parse optional TO/BY/FOR/WHILE/UNTIL in any order.
+        // Duplicate keywords are rejected per REXX (Error 27).
         loop {
             if self.is_keyword("TO") {
+                if to.is_some() {
+                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
+                        .at(self.loc())
+                        .with_detail("duplicate TO in DO instruction"));
+                }
                 self.advance();
                 to = Some(self.parse_expression()?);
             } else if self.is_keyword("BY") {
+                if by.is_some() {
+                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
+                        .at(self.loc())
+                        .with_detail("duplicate BY in DO instruction"));
+                }
                 self.advance();
                 by = Some(self.parse_expression()?);
             } else if self.is_keyword("FOR") {
+                if r#for.is_some() {
+                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
+                        .at(self.loc())
+                        .with_detail("duplicate FOR in DO instruction"));
+                }
                 self.advance();
                 r#for = Some(self.parse_expression()?);
             } else if self.is_keyword("WHILE") {
+                if while_cond.is_some() {
+                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
+                        .at(self.loc())
+                        .with_detail("duplicate WHILE in DO instruction"));
+                }
                 self.advance();
                 while_cond = Some(self.parse_expression()?);
             } else if self.is_keyword("UNTIL") {
+                if until_cond.is_some() {
+                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
+                        .at(self.loc())
+                        .with_detail("duplicate UNTIL in DO instruction"));
+                }
                 self.advance();
                 until_cond = Some(self.parse_expression()?);
             } else {

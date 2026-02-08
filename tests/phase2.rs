@@ -265,3 +265,21 @@ fn negative_loop_count_error() {
     let stderr = run_rexx_fail("do -3; say 'x'; end");
     assert!(stderr.contains("negative"));
 }
+
+#[test]
+fn fractional_loop_count_error() {
+    let stderr = run_rexx_fail("do 3.7; say 'x'; end");
+    assert!(stderr.contains("whole number"));
+}
+
+#[test]
+fn duplicate_to_keyword_error() {
+    let stderr = run_rexx_fail("do i = 1 to 5 to 10; say i; end");
+    assert!(stderr.contains("Error 27"));
+}
+
+#[test]
+fn duplicate_by_keyword_error() {
+    let stderr = run_rexx_fail("do i = 1 to 10 by 2 by 3; say i; end");
+    assert!(stderr.contains("Error 27"));
+}

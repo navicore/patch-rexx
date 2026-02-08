@@ -154,13 +154,13 @@ impl<'a> Evaluator<'a> {
             match signal {
                 ExecSignal::Normal => {}
                 ExecSignal::Leave(ref name) => {
-                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         return Ok(ExecSignal::Normal);
                     }
                     return Ok(signal);
                 }
                 ExecSignal::Iterate(ref name) => {
-                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
+                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         continue;
                     }
                     return Ok(signal);
@@ -178,13 +178,13 @@ impl<'a> Evaluator<'a> {
             match signal {
                 ExecSignal::Normal => {}
                 ExecSignal::Leave(ref name) => {
-                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         return Ok(ExecSignal::Normal);
                     }
                     return Ok(signal);
                 }
                 ExecSignal::Iterate(ref name) => {
-                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
+                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         continue;
                     }
                     return Ok(signal);
@@ -205,13 +205,13 @@ impl<'a> Evaluator<'a> {
             match signal {
                 ExecSignal::Normal => {}
                 ExecSignal::Leave(ref name) => {
-                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         return Ok(ExecSignal::Normal);
                     }
                     return Ok(signal);
                 }
                 ExecSignal::Iterate(ref name) => {
-                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
+                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         continue;
                     }
                     return Ok(signal);
@@ -228,17 +228,16 @@ impl<'a> Evaluator<'a> {
             match signal {
                 ExecSignal::Normal => {}
                 ExecSignal::Leave(ref name) => {
-                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         return Ok(ExecSignal::Normal);
                     }
                     return Ok(signal);
                 }
                 ExecSignal::Iterate(ref name) => {
-                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
-                        // fall through to condition check
-                    } else {
+                    if !Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         return Ok(signal);
                     }
+                    // ITERATE matched: continue to UNTIL check
                 }
                 ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
             }
@@ -295,14 +294,15 @@ impl<'a> Evaluator<'a> {
         let mut iterations: i64 = 0;
 
         loop {
-            // Check TO limit before executing body
+            // Check TO limit before executing body.
+            // BY is guaranteed non-zero (checked earlier).
             if let Some(ref limit) = to_num {
-                #[allow(clippy::cmp_owned)]
-                if by_num >= BigDecimal::from(0) {
-                    if &current > limit {
+                let positive_step = by_num.sign() == bigdecimal::num_bigint::Sign::Plus;
+                if positive_step {
+                    if current > *limit {
                         break;
                     }
-                } else if &current < limit {
+                } else if current < *limit {
                     break;
                 }
             }
@@ -333,17 +333,16 @@ impl<'a> Evaluator<'a> {
             match signal {
                 ExecSignal::Normal => {}
                 ExecSignal::Leave(ref name) => {
-                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         return Ok(ExecSignal::Normal);
                     }
                     return Ok(signal);
                 }
                 ExecSignal::Iterate(ref name) => {
-                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
-                        // fall through to increment
-                    } else {
+                    if !Self::signal_matches(name.as_ref(), block.name.as_ref()) {
                         return Ok(signal);
                     }
+                    // ITERATE matched: fall through to increment
                 }
                 ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
             }
@@ -360,7 +359,7 @@ impl<'a> Evaluator<'a> {
 
             // Increment
             current += &by_num;
-            iterations += 1;
+            iterations = iterations.saturating_add(1);
         }
 
         // Set final value of control variable
@@ -390,26 +389,25 @@ impl<'a> Evaluator<'a> {
             .with_detail("no WHEN matched and no OTHERWISE in SELECT"))
     }
 
-    /// Check if a LEAVE signal matches this loop's name.
-    fn leave_matches(signal_name: Option<&String>, loop_name: Option<&String>) -> bool {
+    /// Check if a LEAVE or ITERATE signal name matches this loop's name.
+    /// Unnamed signals (None) match any loop; named signals match only
+    /// if the loop has the same name.
+    fn signal_matches(signal_name: Option<&String>, loop_name: Option<&String>) -> bool {
         match signal_name {
-            None => true, // unnamed LEAVE matches any loop
+            None => true,
             Some(name) => loop_name.is_some_and(|ln| ln == name),
         }
     }
 
-    /// Check if an ITERATE signal matches this loop's name.
-    fn iterate_matches(signal_name: Option<&String>, loop_name: Option<&String>) -> bool {
-        match signal_name {
-            None => true, // unnamed ITERATE matches any loop
-            Some(name) => loop_name.is_some_and(|ln| ln == name),
-        }
-    }
-
-    /// Convert a value to a non-negative integer for loop counts.
+    /// Convert a value to a non-negative whole number for loop counts.
+    /// Per ANSI REXX, loop counts and FOR values must be whole numbers.
     fn to_integer(&self, val: &RexxValue) -> RexxResult<i64> {
         let d = self.to_number(val)?;
         let rounded = d.round(0);
+        if d != rounded {
+            return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                .with_detail("loop count must be a whole number"));
+        }
         let s = rounded.to_string();
         let n = s.parse::<i64>().map_err(|_| {
             RexxDiagnostic::new(RexxError::ArithmeticOverflow)
@@ -565,7 +563,9 @@ impl<'a> Evaluator<'a> {
                     RexxDiagnostic::new(RexxError::ArithmeticOverflow)
                         .with_detail("exponent too large")
                 })?;
-                if exp_i64.abs() > 999_999_999 {
+                // Limit exponent to prevent OOM from massive intermediate values.
+                // 1_000_000 is generous for practical REXX use cases.
+                if exp_i64.abs() > 1_000_000 {
                     return Err(RexxDiagnostic::new(RexxError::ArithmeticOverflow)
                         .with_detail("exponent exceeds limits"));
                 }
@@ -700,8 +700,9 @@ fn normal_compare(left: &RexxValue, right: &RexxValue) -> std::cmp::Ordering {
 /// REXX integer division: divide and truncate toward zero.
 fn trunc_div(a: &BigDecimal, b: &BigDecimal) -> BigDecimal {
     let quotient = a / b;
-    // Truncate toward zero using with_scale_round(0, Down).
-    // This avoids string-based truncation that can break on scientific notation.
+    // RoundingMode::Down truncates toward zero (not toward negative infinity).
+    // Using with_scale_round avoids string-based truncation that breaks on
+    // scientific notation from BigDecimal::to_string().
     quotient.with_scale_round(0, bigdecimal::RoundingMode::Down)
 }
 
