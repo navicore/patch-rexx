@@ -62,11 +62,19 @@ pub enum TokenKind {
 pub struct Token {
     pub kind: TokenKind,
     pub loc: SourceLoc,
+    /// Whether whitespace (or a comment) appeared before this token.
+    /// Used by the parser to distinguish abuttal from blank concatenation,
+    /// and function calls (`name(`) from concat-with-parens (`name (`).
+    pub space_before: bool,
 }
 
 impl Token {
-    pub fn new(kind: TokenKind, loc: SourceLoc) -> Self {
-        Self { kind, loc }
+    pub fn new(kind: TokenKind, loc: SourceLoc, space_before: bool) -> Self {
+        Self {
+            kind,
+            loc,
+            space_before,
+        }
     }
 }
 
@@ -94,14 +102,17 @@ impl Lexer {
         let mut tokens = Vec::new();
 
         loop {
+            let pos_before = self.pos;
             self.skip_whitespace_and_comments()?;
+            let had_space = self.pos > pos_before;
 
             if self.at_end() {
-                tokens.push(Token::new(TokenKind::Eof, self.loc()));
+                tokens.push(Token::new(TokenKind::Eof, self.loc(), had_space));
                 break;
             }
 
-            let token = self.next_token()?;
+            let mut token = self.next_token()?;
+            token.space_before = had_space;
             tokens.push(token);
         }
 
@@ -216,57 +227,57 @@ impl Lexer {
                     Ok(self.lex_symbol())
                 } else {
                     self.advance();
-                    Ok(Token::new(TokenKind::Dot, loc))
+                    Ok(Token::new(TokenKind::Dot, loc, false))
                 }
             }
 
             // Operators and delimiters
             '+' => {
                 self.advance();
-                Ok(Token::new(TokenKind::Plus, loc))
+                Ok(Token::new(TokenKind::Plus, loc, false))
             }
             '-' => {
                 self.advance();
-                Ok(Token::new(TokenKind::Minus, loc))
+                Ok(Token::new(TokenKind::Minus, loc, false))
             }
             '*' => {
                 self.advance();
                 if self.peek() == Some('*') {
                     self.advance();
-                    Ok(Token::new(TokenKind::Power, loc))
+                    Ok(Token::new(TokenKind::Power, loc, false))
                 } else {
-                    Ok(Token::new(TokenKind::Star, loc))
+                    Ok(Token::new(TokenKind::Star, loc, false))
                 }
             }
             '/' => {
                 self.advance();
                 if self.peek() == Some('/') {
                     self.advance();
-                    Ok(Token::new(TokenKind::Remainder, loc))
+                    Ok(Token::new(TokenKind::Remainder, loc, false))
                 } else {
-                    Ok(Token::new(TokenKind::Slash, loc))
+                    Ok(Token::new(TokenKind::Slash, loc, false))
                 }
             }
             '%' => {
                 self.advance();
-                Ok(Token::new(TokenKind::IntDiv, loc))
+                Ok(Token::new(TokenKind::IntDiv, loc, false))
             }
             '|' => {
                 self.advance();
                 if self.peek() == Some('|') {
                     self.advance();
-                    Ok(Token::new(TokenKind::Concat, loc))
+                    Ok(Token::new(TokenKind::Concat, loc, false))
                 } else {
-                    Ok(Token::new(TokenKind::Or, loc))
+                    Ok(Token::new(TokenKind::Or, loc, false))
                 }
             }
             '&' => {
                 self.advance();
                 if self.peek() == Some('&') {
                     self.advance();
-                    Ok(Token::new(TokenKind::Xor, loc))
+                    Ok(Token::new(TokenKind::Xor, loc, false))
                 } else {
-                    Ok(Token::new(TokenKind::And, loc))
+                    Ok(Token::new(TokenKind::And, loc, false))
                 }
             }
             '\\' | '¬' => {
@@ -275,28 +286,28 @@ impl Lexer {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Ok(Token::new(TokenKind::StrictNotEq, loc))
+                        Ok(Token::new(TokenKind::StrictNotEq, loc, false))
                     } else {
-                        Ok(Token::new(TokenKind::NotEqual, loc))
+                        Ok(Token::new(TokenKind::NotEqual, loc, false))
                     }
                 } else if self.peek() == Some('<') {
                     self.advance();
-                    Ok(Token::new(TokenKind::GreaterEq, loc))
+                    Ok(Token::new(TokenKind::GreaterEq, loc, false))
                 } else if self.peek() == Some('>') {
                     self.advance();
-                    Ok(Token::new(TokenKind::LessEq, loc))
+                    Ok(Token::new(TokenKind::LessEq, loc, false))
                 } else {
-                    Ok(Token::new(TokenKind::Not, loc))
+                    Ok(Token::new(TokenKind::Not, loc, false))
                 }
             }
             '=' => {
                 self.advance();
                 if self.peek() == Some('=') {
                     self.advance();
-                    Ok(Token::new(TokenKind::StrictEq, loc))
+                    Ok(Token::new(TokenKind::StrictEq, loc, false))
                 } else {
                     // Parser disambiguates assignment vs comparison
-                    Ok(Token::new(TokenKind::Assign, loc))
+                    Ok(Token::new(TokenKind::Assign, loc, false))
                 }
             }
             '>' => {
@@ -305,15 +316,15 @@ impl Lexer {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Ok(Token::new(TokenKind::StrictGte, loc))
+                        Ok(Token::new(TokenKind::StrictGte, loc, false))
                     } else {
-                        Ok(Token::new(TokenKind::StrictGt, loc))
+                        Ok(Token::new(TokenKind::StrictGt, loc, false))
                     }
                 } else if self.peek() == Some('=') {
                     self.advance();
-                    Ok(Token::new(TokenKind::GreaterEq, loc))
+                    Ok(Token::new(TokenKind::GreaterEq, loc, false))
                 } else {
-                    Ok(Token::new(TokenKind::Greater, loc))
+                    Ok(Token::new(TokenKind::Greater, loc, false))
                 }
             }
             '<' => {
@@ -322,39 +333,39 @@ impl Lexer {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Ok(Token::new(TokenKind::StrictLte, loc))
+                        Ok(Token::new(TokenKind::StrictLte, loc, false))
                     } else {
-                        Ok(Token::new(TokenKind::StrictLt, loc))
+                        Ok(Token::new(TokenKind::StrictLt, loc, false))
                     }
                 } else if self.peek() == Some('=') {
                     self.advance();
-                    Ok(Token::new(TokenKind::LessEq, loc))
+                    Ok(Token::new(TokenKind::LessEq, loc, false))
                 } else if self.peek() == Some('>') {
                     self.advance();
-                    Ok(Token::new(TokenKind::NotEqual, loc))
+                    Ok(Token::new(TokenKind::NotEqual, loc, false))
                 } else {
-                    Ok(Token::new(TokenKind::Less, loc))
+                    Ok(Token::new(TokenKind::Less, loc, false))
                 }
             }
             '(' => {
                 self.advance();
-                Ok(Token::new(TokenKind::LeftParen, loc))
+                Ok(Token::new(TokenKind::LeftParen, loc, false))
             }
             ')' => {
                 self.advance();
-                Ok(Token::new(TokenKind::RightParen, loc))
+                Ok(Token::new(TokenKind::RightParen, loc, false))
             }
             ',' => {
                 self.advance();
-                Ok(Token::new(TokenKind::Comma, loc))
+                Ok(Token::new(TokenKind::Comma, loc, false))
             }
             ';' => {
                 self.advance();
-                Ok(Token::new(TokenKind::Semicolon, loc))
+                Ok(Token::new(TokenKind::Semicolon, loc, false))
             }
             ':' => {
                 self.advance();
-                Ok(Token::new(TokenKind::Colon, loc))
+                Ok(Token::new(TokenKind::Colon, loc, false))
             }
             _ => Err(RexxDiagnostic::new(RexxError::InvalidCharacter)
                 .at(loc)
@@ -397,7 +408,7 @@ impl Lexer {
                             .at(loc.clone())
                             .with_detail(e)
                     })?;
-                    return Ok(Token::new(TokenKind::StringLit(decoded), loc));
+                    return Ok(Token::new(TokenKind::StringLit(decoded), loc, false));
                 }
                 'B' => {
                     self.advance();
@@ -406,13 +417,13 @@ impl Lexer {
                             .at(loc.clone())
                             .with_detail(e)
                     })?;
-                    return Ok(Token::new(TokenKind::StringLit(decoded), loc));
+                    return Ok(Token::new(TokenKind::StringLit(decoded), loc, false));
                 }
                 _ => {}
             }
         }
 
-        Ok(Token::new(TokenKind::StringLit(value), loc))
+        Ok(Token::new(TokenKind::StringLit(value), loc, false))
     }
 
     fn lex_number(&mut self) -> Token {
@@ -444,7 +455,7 @@ impl Lexer {
             }
         }
 
-        Token::new(TokenKind::Number(num), loc)
+        Token::new(TokenKind::Number(num), loc, false)
     }
 
     fn lex_symbol(&mut self) -> Token {
@@ -468,7 +479,7 @@ impl Lexer {
             }
         }
 
-        Token::new(TokenKind::Symbol(name), loc)
+        Token::new(TokenKind::Symbol(name), loc, false)
     }
 }
 

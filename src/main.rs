@@ -1,10 +1,12 @@
-// TODO: remove once parser and evaluator wire everything together
+// TODO: remove once all AST / value / env types are used by later phases
 #![allow(dead_code)]
 
 mod ast;
 mod env;
 mod error;
+mod eval;
 mod lexer;
+mod parser;
 mod value;
 
 use clap::Parser;
@@ -35,35 +37,37 @@ fn main() {
     let cli = Cli::parse();
 
     if let Some(expr) = &cli.eval {
-        run_source(expr, &cli.args);
+        let mut environment = env::Environment::new();
+        if let Err(e) = run_line(expr, &mut environment) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
     } else if let Some(path) = &cli.source {
         match std::fs::read_to_string(path) {
-            Ok(source) => run_source(&source, &cli.args),
+            Ok(source) => {
+                let mut environment = env::Environment::new();
+                if let Err(e) = run_line(&source, &mut environment) {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
             Err(e) => {
                 eprintln!("patch-rexx: cannot read {}: {}", path.display(), e);
                 std::process::exit(1);
             }
         }
     } else {
-        // Default to REPL when no file given
         run_repl();
     }
 }
 
-fn run_source(source: &str, _args: &[String]) {
-    let mut lexer = lexer::Lexer::new(source);
-    match lexer.tokenize() {
-        Ok(tokens) => {
-            // TODO: parse and evaluate
-            for tok in &tokens {
-                println!("{:?}", tok.kind);
-            }
-        }
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
-    }
+fn run_line(source: &str, environment: &mut env::Environment) -> error::RexxResult<()> {
+    let mut lex = lexer::Lexer::new(source);
+    let tokens = lex.tokenize()?;
+    let mut p = parser::Parser::new(tokens);
+    let program = p.parse()?;
+    let mut evaluator = eval::Evaluator::new(environment);
+    evaluator.exec(&program)
 }
 
 fn run_repl() {
@@ -81,7 +85,7 @@ fn run_repl() {
         }
     };
 
-    let _env = env::Environment::new();
+    let mut environment = env::Environment::new();
 
     loop {
         match rl.readline("rexx> ") {
@@ -94,7 +98,9 @@ fn run_repl() {
                 if trimmed.eq_ignore_ascii_case("exit") {
                     break;
                 }
-                run_source(trimmed, &[]);
+                if let Err(e) = run_line(trimmed, &mut environment) {
+                    eprintln!("{e}");
+                }
             }
             Err(
                 rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof,
