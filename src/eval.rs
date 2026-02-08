@@ -167,10 +167,8 @@ impl<'a> Evaluator<'a> {
                     return Err(RexxDiagnostic::new(RexxError::ArithmeticOverflow)
                         .with_detail("division by zero"));
                 }
-                // Truncate both operands to whole numbers, then divide
-                let ai = a.round(0);
-                let bi = b.round(0);
-                let result = (ai / bi).round(0);
+                // REXX integer division truncates toward zero
+                let result = trunc_div(&a, &b);
                 Ok(RexxValue::from_decimal(
                     &result,
                     self.settings.digits,
@@ -184,8 +182,8 @@ impl<'a> Evaluator<'a> {
                     return Err(RexxDiagnostic::new(RexxError::ArithmeticOverflow)
                         .with_detail("division by zero"));
                 }
-                // REXX remainder: a - (a%b)*b
-                let int_div = (&a / &b).round(0);
+                // REXX remainder: a - (a%b)*b where % truncates toward zero
+                let int_div = trunc_div(&a, &b);
                 let result = &a - &int_div * &b;
                 Ok(RexxValue::from_decimal(
                     &result,
@@ -206,6 +204,10 @@ impl<'a> Evaluator<'a> {
                     RexxDiagnostic::new(RexxError::ArithmeticOverflow)
                         .with_detail("exponent too large")
                 })?;
+                if base.is_zero() && exp_i64 < 0 {
+                    return Err(RexxDiagnostic::new(RexxError::ArithmeticOverflow)
+                        .with_detail("zero raised to a negative power"));
+                }
                 let result = pow_bigdecimal(&base, exp_i64);
                 Ok(RexxValue::from_decimal(
                     &result,
@@ -328,6 +330,18 @@ fn normal_compare(left: &RexxValue, right: &RexxValue) -> std::cmp::Ordering {
     let lp: String = format!("{ls:<max_len$}");
     let rp: String = format!("{rs:<max_len$}");
     lp.cmp(&rp)
+}
+
+/// REXX integer division: divide and truncate toward zero.
+fn trunc_div(a: &BigDecimal, b: &BigDecimal) -> BigDecimal {
+    let quotient = a / b;
+    // Truncate toward zero (not round-half-even)
+    let s = quotient.to_string();
+    if let Some(dot) = s.find('.') {
+        BigDecimal::from_str(&s[..dot]).unwrap_or_default()
+    } else {
+        quotient
+    }
 }
 
 /// Compute base ** exp for `BigDecimal` with integer exponent.
