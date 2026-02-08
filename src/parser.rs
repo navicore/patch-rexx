@@ -792,14 +792,22 @@ impl Parser {
         let loc = self.loc();
         self.advance(); // consume ARG
 
+        // Phase 3: parse one variable per argument position, commas advance
+        // to the next argument. Additional space-separated symbols within a
+        // position are skipped (full word-split template parsing is Phase 4).
         let mut elements = Vec::new();
+        let mut have_var = false; // true once we've captured a variable for this position
         while !self.is_terminator() {
             if matches!(self.peek_kind(), TokenKind::Comma) {
-                self.advance(); // consume comma
-                elements.push(TemplateElement::Comma);
-            } else if let TokenKind::Symbol(s) = self.peek_kind() {
-                elements.push(TemplateElement::Variable(s.to_uppercase()));
                 self.advance();
+                elements.push(TemplateElement::Comma);
+                have_var = false; // reset for next argument position
+            } else if let TokenKind::Symbol(s) = self.peek_kind() {
+                if !have_var {
+                    elements.push(TemplateElement::Variable(s.to_uppercase()));
+                    have_var = true;
+                }
+                self.advance(); // consume (and skip if already have a var)
             } else {
                 break;
             }

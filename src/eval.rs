@@ -248,11 +248,11 @@ impl<'a> Evaluator<'a> {
         for element in &template.elements {
             match element {
                 TemplateElement::Variable(name) => {
-                    let val = args.get(arg_idx).map_or_else(
-                        || RexxValue::new(""),
-                        |v| RexxValue::new(v.as_str().to_uppercase()),
-                    );
-                    self.env.set(name, val);
+                    if let Some(v) = args.get(arg_idx) {
+                        self.env
+                            .set(name, RexxValue::new(v.as_str().to_uppercase()));
+                    }
+                    // Missing args: leave variable unset (returns its own name)
                 }
                 TemplateElement::Comma => {
                     arg_idx += 1;
