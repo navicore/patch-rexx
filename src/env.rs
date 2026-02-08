@@ -22,6 +22,8 @@ struct Scope {
     vars: HashMap<String, RexxValue>,
     /// Stem variables: "STEM." → { tail → value }.
     stems: HashMap<String, StemVar>,
+    /// Names exposed from the parent scope (written back on pop).
+    exposed: Vec<String>,
 }
 
 /// A stem variable with default and compound entries.
@@ -116,34 +118,44 @@ impl Environment {
     pub fn push_procedure_expose(&mut self, names: &[String]) {
         let mut new_scope = Scope::new();
 
+        let caller = self.scopes.last().expect("environment has no scopes");
         for name in names {
             let upper = name.to_uppercase();
             if upper.ends_with('.') {
-                // Expose a stem — copy the entire stem
-                for scope in self.scopes.iter().rev() {
-                    if let Some(stem_var) = scope.stems.get(&upper) {
-                        new_scope.stems.insert(upper.clone(), stem_var.clone());
-                        break;
-                    }
+                // Expose a stem — copy from caller's scope only
+                if let Some(stem_var) = caller.stems.get(&upper) {
+                    new_scope.stems.insert(upper.clone(), stem_var.clone());
                 }
             } else {
-                // Expose a simple variable
-                for scope in self.scopes.iter().rev() {
-                    if let Some(val) = scope.vars.get(&upper) {
-                        new_scope.vars.insert(upper.clone(), val.clone());
-                        break;
-                    }
+                // Expose a simple variable — copy from caller's scope only
+                if let Some(val) = caller.vars.get(&upper) {
+                    new_scope.vars.insert(upper.clone(), val.clone());
                 }
             }
         }
 
+        new_scope.exposed = names.iter().map(|n| n.to_uppercase()).collect();
         self.scopes.push(new_scope);
     }
 
     /// Pop the current scope (on RETURN from a PROCEDURE).
+    /// Writes back any exposed variables to the parent scope.
     pub fn pop_procedure(&mut self) {
         if self.scopes.len() > 1 {
-            self.scopes.pop();
+            let popped = self.scopes.pop().unwrap();
+            let parent = self.scopes.last_mut().unwrap();
+            for name in &popped.exposed {
+                if name.ends_with('.') {
+                    if let Some(stem_var) = popped.stems.get(name) {
+                        parent.stems.insert(name.clone(), stem_var.clone());
+                    }
+                } else if let Some(val) = popped.vars.get(name) {
+                    parent.vars.insert(name.clone(), val.clone());
+                } else {
+                    // Variable was dropped in the inner scope — drop in parent too
+                    parent.vars.remove(name);
+                }
+            }
         }
     }
 
@@ -171,6 +183,7 @@ impl Scope {
         Self {
             vars: HashMap::new(),
             stems: HashMap::new(),
+            exposed: Vec::new(),
         }
     }
 }

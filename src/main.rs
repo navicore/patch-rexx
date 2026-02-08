@@ -66,8 +66,8 @@ fn run_line(source: &str, environment: &mut env::Environment) -> error::RexxResu
     let tokens = lex.tokenize()?;
     let mut p = parser::Parser::new(tokens);
     let program = p.parse()?;
-    let mut evaluator = eval::Evaluator::new(environment);
-    let signal = evaluator.exec(&program)?;
+    let mut evaluator = eval::Evaluator::new(environment, &program);
+    let signal = evaluator.exec()?;
     match signal {
         eval::ExecSignal::Normal | eval::ExecSignal::Exit(_) | eval::ExecSignal::Return(_) => {
             Ok(())

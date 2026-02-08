@@ -5,8 +5,8 @@
 //! recognised by context at the start of a clause.
 
 use crate::ast::{
-    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, Program,
-    UnaryOp,
+    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, ParseTemplate,
+    Program, TemplateElement, UnaryOp,
 };
 use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
 use crate::lexer::{Token, TokenKind};
@@ -234,6 +234,26 @@ impl Parser {
             // RETURN instruction
             if Self::check_keyword(name, "RETURN") {
                 return self.parse_return();
+            }
+
+            // CALL instruction
+            if Self::check_keyword(name, "CALL") {
+                return self.parse_call();
+            }
+
+            // PROCEDURE instruction
+            if Self::check_keyword(name, "PROCEDURE") {
+                return Ok(self.parse_procedure());
+            }
+
+            // ARG instruction
+            if Self::check_keyword(name, "ARG") {
+                return Ok(self.parse_arg());
+            }
+
+            // DROP instruction
+            if Self::check_keyword(name, "DROP") {
+                return Ok(self.parse_drop());
             }
 
             // Stray END outside DO/SELECT
@@ -706,6 +726,118 @@ impl Parser {
             kind: ClauseKind::Return(expr),
             loc,
         })
+    }
+
+    /// Parse: CALL name [expr [, expr]...]
+    fn parse_call(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume CALL
+
+        // Read routine name
+        let name = if let TokenKind::Symbol(s) = self.peek_kind() {
+            let n = s.to_uppercase();
+            self.advance();
+            n
+        } else {
+            return Err(RexxDiagnostic::new(RexxError::ExpectedSymbol)
+                .at(self.loc())
+                .with_detail("expected routine name after CALL"));
+        };
+
+        // Parse optional comma-separated arguments
+        let mut args = Vec::new();
+        if !self.is_terminator() {
+            args.push(self.parse_expression()?);
+            while matches!(self.peek_kind(), TokenKind::Comma) {
+                self.advance(); // consume comma
+                args.push(self.parse_expression()?);
+            }
+        }
+
+        Ok(Clause {
+            kind: ClauseKind::Call { name, args },
+            loc,
+        })
+    }
+
+    /// Parse: PROCEDURE [EXPOSE name [name...]]
+    fn parse_procedure(&mut self) -> Clause {
+        let loc = self.loc();
+        self.advance(); // consume PROCEDURE
+
+        let expose = if self.is_keyword("EXPOSE") {
+            self.advance(); // consume EXPOSE
+            let mut names = Vec::new();
+            while !self.is_terminator() {
+                if let TokenKind::Symbol(s) = self.peek_kind() {
+                    names.push(s.to_uppercase());
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+            Some(names)
+        } else {
+            None
+        };
+
+        Clause {
+            kind: ClauseKind::Procedure(expose),
+            loc,
+        }
+    }
+
+    /// Parse: ARG [var [, var]...]
+    fn parse_arg(&mut self) -> Clause {
+        let loc = self.loc();
+        self.advance(); // consume ARG
+
+        // Phase 3: parse one variable per argument position, commas advance
+        // to the next argument. Additional space-separated symbols within a
+        // position are skipped (full word-split template parsing is Phase 4).
+        let mut elements = Vec::new();
+        let mut have_var = false; // true once we've captured a variable for this position
+        while !self.is_terminator() {
+            if matches!(self.peek_kind(), TokenKind::Comma) {
+                self.advance();
+                elements.push(TemplateElement::Comma);
+                have_var = false; // reset for next argument position
+            } else if let TokenKind::Symbol(s) = self.peek_kind() {
+                if !have_var {
+                    elements.push(TemplateElement::Variable(s.to_uppercase()));
+                    have_var = true;
+                }
+                self.advance(); // consume (and skip if already have a var)
+            } else {
+                break;
+            }
+        }
+
+        Clause {
+            kind: ClauseKind::Arg(ParseTemplate { elements }),
+            loc,
+        }
+    }
+
+    /// Parse: DROP name [name...]
+    fn parse_drop(&mut self) -> Clause {
+        let loc = self.loc();
+        self.advance(); // consume DROP
+
+        let mut names = Vec::new();
+        while !self.is_terminator() {
+            if let TokenKind::Symbol(s) = self.peek_kind() {
+                names.push(s.to_uppercase());
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        Clause {
+            kind: ClauseKind::Drop(names),
+            loc,
+        }
     }
 
     // ── expression parsing (precedence climbing) ────────────────────
