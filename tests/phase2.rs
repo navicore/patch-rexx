@@ -283,3 +283,41 @@ fn duplicate_by_keyword_error() {
     let stderr = run_rexx_fail("do i = 1 to 10 by 2 by 3; say i; end");
     assert!(stderr.contains("Error 27"));
 }
+
+// ── ITERATE in DO UNTIL ───────────────────────────────────────
+// Per ANSI REXX, ITERATE skips to the UNTIL check (not back to
+// the top). If UNTIL is false, the body runs again.
+
+#[test]
+fn iterate_in_do_until() {
+    // ITERATE on i=2 skips SAY but UNTIL (2>3 = false) continues the loop.
+    assert_eq!(
+        run_rexx("s = ''; i = 0; do until i > 3; i = i + 1; if i = 2 then iterate; s = s || i || ' '; end; say s"),
+        "1 3 4"
+    );
+}
+
+// ── Controlled DO with UNTIL — final variable value ───────────
+// When UNTIL is satisfied the loop exits WITHOUT incrementing
+// the control variable.
+
+#[test]
+fn controlled_do_until_final_value() {
+    // i steps through 1, 3, 5, 7. UNTIL (i>5) first true at i=7.
+    // Loop exits without incrementing, so final i = 7 (not 9).
+    assert_eq!(
+        run_rexx("s = ''; do i = 1 to 10 by 2 until i > 5; s = s || i || ' '; end; say s || 'final=' || i"),
+        "1 3 5 7 final=7"
+    );
+}
+
+// ── Controlled DO with TO — final variable is one-past-limit ──
+
+#[test]
+fn controlled_do_to_final_value() {
+    // i steps 1,3,5. Next would be 7 which exceeds TO 5, so final i=7.
+    assert_eq!(
+        run_rexx("do i = 1 to 5 by 2; end; say i"),
+        "7"
+    );
+}

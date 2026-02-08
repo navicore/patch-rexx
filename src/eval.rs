@@ -347,9 +347,10 @@ impl<'a> Evaluator<'a> {
                 ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
             }
 
-            // Check UNTIL condition (after body)
-            // Per ANSI REXX, when UNTIL is satisfied the loop ends without
-            // incrementing the control variable.
+            // Check UNTIL condition (after body, before increment).
+            // Per ANSI REXX §7.3.5, when UNTIL is satisfied the loop
+            // terminates immediately — the control variable retains its
+            // current value (the increment below is skipped via break).
             if let Some(ref until_expr) = ctrl.until_cond {
                 let v = self.eval_expr(until_expr)?;
                 if to_logical(&v)? {
@@ -357,12 +358,13 @@ impl<'a> Evaluator<'a> {
                 }
             }
 
-            // Increment
+            // Increment (only reached if UNTIL was false or absent)
             current += &by_num;
             iterations = iterations.saturating_add(1);
         }
 
-        // Set final value of control variable
+        // Set final value of control variable (may be one-past-limit
+        // for TO termination, or last body value for UNTIL termination).
         self.env.set(
             &ctrl.var,
             RexxValue::from_decimal(&current, self.settings.digits, self.settings.form),
