@@ -67,7 +67,16 @@ fn run_line(source: &str, environment: &mut env::Environment) -> error::RexxResu
     let mut p = parser::Parser::new(tokens);
     let program = p.parse()?;
     let mut evaluator = eval::Evaluator::new(environment);
-    evaluator.exec(&program)
+    let signal = evaluator.exec(&program)?;
+    match signal {
+        eval::ExecSignal::Normal | eval::ExecSignal::Exit(_) | eval::ExecSignal::Return(_) => {
+            Ok(())
+        }
+        eval::ExecSignal::Leave(_) | eval::ExecSignal::Iterate(_) => Err(
+            error::RexxDiagnostic::new(error::RexxError::InvalidLeaveIterate)
+                .with_detail("LEAVE/ITERATE outside of DO loop"),
+        ),
+    }
 }
 
 fn run_repl() {

@@ -7,10 +7,22 @@
 use bigdecimal::{BigDecimal, Zero};
 use std::str::FromStr;
 
-use crate::ast::{AssignTarget, BinOp, Clause, ClauseKind, Expr, Program, TailElement, UnaryOp};
+use crate::ast::{
+    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, Program,
+    TailElement, UnaryOp,
+};
 use crate::env::Environment;
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
 use crate::value::{NumericSettings, RexxValue};
+
+/// Signal returned by clause/block execution for control flow.
+pub enum ExecSignal {
+    Normal,
+    Leave(Option<String>),
+    Iterate(Option<String>),
+    Exit(Option<RexxValue>),
+    Return(Option<RexxValue>),
+}
 
 pub struct Evaluator<'a> {
     env: &'a mut Environment,
@@ -25,18 +37,32 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    pub fn exec(&mut self, program: &Program) -> RexxResult<()> {
+    pub fn exec(&mut self, program: &Program) -> RexxResult<ExecSignal> {
         for clause in &program.clauses {
-            self.exec_clause(clause)?;
+            let signal = self.exec_clause(clause)?;
+            if !matches!(signal, ExecSignal::Normal) {
+                return Ok(signal);
+            }
         }
-        Ok(())
+        Ok(ExecSignal::Normal)
     }
 
-    fn exec_clause(&mut self, clause: &Clause) -> RexxResult<()> {
+    fn exec_body(&mut self, body: &[Clause]) -> RexxResult<ExecSignal> {
+        for clause in body {
+            let signal = self.exec_clause(clause)?;
+            if !matches!(signal, ExecSignal::Normal) {
+                return Ok(signal);
+            }
+        }
+        Ok(ExecSignal::Normal)
+    }
+
+    fn exec_clause(&mut self, clause: &Clause) -> RexxResult<ExecSignal> {
         match &clause.kind {
             ClauseKind::Say(expr) => {
                 let val = self.eval_expr(expr)?;
                 println!("{val}");
+                Ok(ExecSignal::Normal)
             }
             ClauseKind::Assignment { target, expr } => {
                 let val = self.eval_expr(expr)?;
@@ -49,16 +75,344 @@ impl<'a> Evaluator<'a> {
                         self.env.set_compound(stem, &resolved_tail, val);
                     }
                 }
+                Ok(ExecSignal::Normal)
             }
             ClauseKind::Command(expr) => {
                 // Evaluate and discard — future: host command
                 let _val = self.eval_expr(expr)?;
+                Ok(ExecSignal::Normal)
+            }
+            ClauseKind::If {
+                condition,
+                then_clause,
+                else_clause,
+            } => self.exec_if(condition, then_clause, else_clause.as_deref()),
+            ClauseKind::Do(block) => self.exec_do(block),
+            ClauseKind::Select {
+                when_clauses,
+                otherwise,
+            } => self.exec_select(when_clauses, otherwise.as_ref()),
+            ClauseKind::Leave(name) => Ok(ExecSignal::Leave(name.clone())),
+            ClauseKind::Iterate(name) => Ok(ExecSignal::Iterate(name.clone())),
+            ClauseKind::Exit(expr) => {
+                let val = if let Some(e) = expr {
+                    Some(self.eval_expr(e)?)
+                } else {
+                    None
+                };
+                Ok(ExecSignal::Exit(val))
+            }
+            ClauseKind::Return(expr) => {
+                let val = if let Some(e) = expr {
+                    Some(self.eval_expr(e)?)
+                } else {
+                    None
+                };
+                Ok(ExecSignal::Return(val))
             }
             _ => {
                 // Label, Nop, and other clause types not yet implemented
+                Ok(ExecSignal::Normal)
             }
         }
-        Ok(())
+    }
+
+    fn exec_if(
+        &mut self,
+        condition: &Expr,
+        then_clause: &Clause,
+        else_clause: Option<&Clause>,
+    ) -> RexxResult<ExecSignal> {
+        let cond_val = self.eval_expr(condition)?;
+        let b = to_logical(&cond_val)?;
+        if b {
+            self.exec_clause(then_clause)
+        } else if let Some(else_c) = else_clause {
+            self.exec_clause(else_c)
+        } else {
+            Ok(ExecSignal::Normal)
+        }
+    }
+
+    fn exec_do(&mut self, block: &DoBlock) -> RexxResult<ExecSignal> {
+        match &block.kind {
+            DoKind::Simple => {
+                let signal = self.exec_body(&block.body)?;
+                Ok(signal)
+            }
+            DoKind::Forever => self.exec_do_forever(block),
+            DoKind::Count(expr) => self.exec_do_count(expr, block),
+            DoKind::While(expr) => self.exec_do_while(expr, block),
+            DoKind::Until(expr) => self.exec_do_until(expr, block),
+            DoKind::Controlled(ctrl) => self.exec_do_controlled(ctrl, block),
+        }
+    }
+
+    fn exec_do_forever(&mut self, block: &DoBlock) -> RexxResult<ExecSignal> {
+        loop {
+            let signal = self.exec_body(&block.body)?;
+            match signal {
+                ExecSignal::Normal => {}
+                ExecSignal::Leave(ref name) => {
+                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                        return Ok(ExecSignal::Normal);
+                    }
+                    return Ok(signal);
+                }
+                ExecSignal::Iterate(ref name) => {
+                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
+                        continue;
+                    }
+                    return Ok(signal);
+                }
+                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+            }
+        }
+    }
+
+    fn exec_do_count(&mut self, count_expr: &Expr, block: &DoBlock) -> RexxResult<ExecSignal> {
+        let count_val = self.eval_expr(count_expr)?;
+        let count = self.to_integer(&count_val)?;
+        for _ in 0..count {
+            let signal = self.exec_body(&block.body)?;
+            match signal {
+                ExecSignal::Normal => {}
+                ExecSignal::Leave(ref name) => {
+                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                        return Ok(ExecSignal::Normal);
+                    }
+                    return Ok(signal);
+                }
+                ExecSignal::Iterate(ref name) => {
+                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
+                        continue;
+                    }
+                    return Ok(signal);
+                }
+                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+            }
+        }
+        Ok(ExecSignal::Normal)
+    }
+
+    fn exec_do_while(&mut self, cond_expr: &Expr, block: &DoBlock) -> RexxResult<ExecSignal> {
+        loop {
+            let cond_val = self.eval_expr(cond_expr)?;
+            if !to_logical(&cond_val)? {
+                break;
+            }
+            let signal = self.exec_body(&block.body)?;
+            match signal {
+                ExecSignal::Normal => {}
+                ExecSignal::Leave(ref name) => {
+                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                        return Ok(ExecSignal::Normal);
+                    }
+                    return Ok(signal);
+                }
+                ExecSignal::Iterate(ref name) => {
+                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
+                        continue;
+                    }
+                    return Ok(signal);
+                }
+                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+            }
+        }
+        Ok(ExecSignal::Normal)
+    }
+
+    fn exec_do_until(&mut self, cond_expr: &Expr, block: &DoBlock) -> RexxResult<ExecSignal> {
+        loop {
+            let signal = self.exec_body(&block.body)?;
+            match signal {
+                ExecSignal::Normal => {}
+                ExecSignal::Leave(ref name) => {
+                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                        return Ok(ExecSignal::Normal);
+                    }
+                    return Ok(signal);
+                }
+                ExecSignal::Iterate(ref name) => {
+                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
+                        // fall through to condition check
+                    } else {
+                        return Ok(signal);
+                    }
+                }
+                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+            }
+            let cond_val = self.eval_expr(cond_expr)?;
+            if to_logical(&cond_val)? {
+                break;
+            }
+        }
+        Ok(ExecSignal::Normal)
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn exec_do_controlled(
+        &mut self,
+        ctrl: &ControlledLoop,
+        block: &DoBlock,
+    ) -> RexxResult<ExecSignal> {
+        // Evaluate start value
+        let start_val = self.eval_expr(&ctrl.start)?;
+        let start_num = self.to_number(&start_val)?;
+
+        // Evaluate TO limit
+        let to_num = if let Some(ref to_expr) = ctrl.to {
+            let v = self.eval_expr(to_expr)?;
+            Some(self.to_number(&v)?)
+        } else {
+            None
+        };
+
+        // Evaluate BY step (default 1)
+        let by_num = if let Some(ref by_expr) = ctrl.by {
+            let v = self.eval_expr(by_expr)?;
+            self.to_number(&v)?
+        } else {
+            BigDecimal::from(1)
+        };
+
+        // Evaluate FOR count
+        let for_count = if let Some(ref for_expr) = ctrl.r#for {
+            let v = self.eval_expr(for_expr)?;
+            Some(self.to_integer(&v)?)
+        } else {
+            None
+        };
+
+        // Set the control variable
+        let mut current = start_num;
+        let mut iterations: i64 = 0;
+
+        loop {
+            // Check TO limit before executing body
+            if let Some(ref limit) = to_num {
+                #[allow(clippy::cmp_owned)]
+                if by_num >= BigDecimal::from(0) {
+                    if &current > limit {
+                        break;
+                    }
+                } else if &current < limit {
+                    break;
+                }
+            }
+
+            // Check FOR count
+            if let Some(max) = for_count
+                && iterations >= max
+            {
+                break;
+            }
+
+            // Set control variable
+            self.env.set(
+                &ctrl.var,
+                RexxValue::from_decimal(&current, self.settings.digits, self.settings.form),
+            );
+
+            // Check WHILE condition
+            if let Some(ref while_expr) = ctrl.while_cond {
+                let v = self.eval_expr(while_expr)?;
+                if !to_logical(&v)? {
+                    break;
+                }
+            }
+
+            // Execute body
+            let signal = self.exec_body(&block.body)?;
+            match signal {
+                ExecSignal::Normal => {}
+                ExecSignal::Leave(ref name) => {
+                    if Self::leave_matches(name.as_ref(), block.name.as_ref()) {
+                        return Ok(ExecSignal::Normal);
+                    }
+                    return Ok(signal);
+                }
+                ExecSignal::Iterate(ref name) => {
+                    if Self::iterate_matches(name.as_ref(), block.name.as_ref()) {
+                        // fall through to increment
+                    } else {
+                        return Ok(signal);
+                    }
+                }
+                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+            }
+
+            // Check UNTIL condition (after body)
+            if let Some(ref until_expr) = ctrl.until_cond {
+                let v = self.eval_expr(until_expr)?;
+                if to_logical(&v)? {
+                    // Increment before breaking so variable is past the condition
+                    current += &by_num;
+                    self.env.set(
+                        &ctrl.var,
+                        RexxValue::from_decimal(&current, self.settings.digits, self.settings.form),
+                    );
+                    break;
+                }
+            }
+
+            // Increment
+            current += &by_num;
+            iterations += 1;
+        }
+
+        // Set final value of control variable
+        self.env.set(
+            &ctrl.var,
+            RexxValue::from_decimal(&current, self.settings.digits, self.settings.form),
+        );
+
+        Ok(ExecSignal::Normal)
+    }
+
+    fn exec_select(
+        &mut self,
+        when_clauses: &[(Expr, Vec<Clause>)],
+        otherwise: Option<&Vec<Clause>>,
+    ) -> RexxResult<ExecSignal> {
+        for (condition, body) in when_clauses {
+            let val = self.eval_expr(condition)?;
+            if to_logical(&val)? {
+                return self.exec_body(body);
+            }
+        }
+        if let Some(body) = otherwise {
+            return self.exec_body(body);
+        }
+        Err(RexxDiagnostic::new(RexxError::ExpectedWhenOtherwise)
+            .with_detail("no WHEN matched and no OTHERWISE in SELECT"))
+    }
+
+    /// Check if a LEAVE signal matches this loop's name.
+    fn leave_matches(signal_name: Option<&String>, loop_name: Option<&String>) -> bool {
+        match signal_name {
+            None => true, // unnamed LEAVE matches any loop
+            Some(name) => loop_name.is_some_and(|ln| ln == name),
+        }
+    }
+
+    /// Check if an ITERATE signal matches this loop's name.
+    fn iterate_matches(signal_name: Option<&String>, loop_name: Option<&String>) -> bool {
+        match signal_name {
+            None => true, // unnamed ITERATE matches any loop
+            Some(name) => loop_name.is_some_and(|ln| ln == name),
+        }
+    }
+
+    /// Convert a value to a non-negative integer for loop counts.
+    fn to_integer(&self, val: &RexxValue) -> RexxResult<i64> {
+        let d = self.to_number(val)?;
+        let rounded = d.round(0);
+        let s = rounded.to_string();
+        s.parse::<i64>().map_err(|_| {
+            RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                .with_detail(format!("'{}' is not a valid whole number", val.as_str()))
+        })
     }
 
     fn resolve_tail(&self, tail: &[TailElement]) -> String {
@@ -505,7 +859,8 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let program = parser.parse().unwrap();
         let mut eval = Evaluator::new(&mut env);
-        eval.exec(&program).unwrap();
+        let signal = eval.exec(&program).unwrap();
+        assert!(matches!(signal, ExecSignal::Normal));
         // After execution, x should be "42" and the command clause evaluated "43"
         assert_eq!(env.get("X").as_str(), "42");
     }
@@ -525,7 +880,8 @@ mod tests {
         let mut parser = Parser::new(tokens);
         let program = parser.parse().unwrap();
         let mut eval = Evaluator::new(&mut env);
-        eval.exec(&program).unwrap();
+        let signal = eval.exec(&program).unwrap();
+        assert!(matches!(signal, ExecSignal::Normal));
     }
 
     #[test]

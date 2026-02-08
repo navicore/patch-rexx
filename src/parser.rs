@@ -4,18 +4,36 @@
 //! REXX has no reserved words; keywords like SAY, IF, DO are just symbols
 //! recognised by context at the start of a clause.
 
-use crate::ast::{AssignTarget, BinOp, Clause, ClauseKind, Expr, Program, UnaryOp};
+use crate::ast::{
+    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, Program,
+    UnaryOp,
+};
 use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
 use crate::lexer::{Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// Depth counter: >0 while parsing a DO header so that symbols like
+    /// TO, BY, FOR, WHILE, UNTIL are not consumed by implicit concatenation.
+    do_header_depth: usize,
+    /// Depth counter: >0 while parsing IF condition / WHEN condition so that
+    /// THEN is not consumed by implicit concatenation.
+    condition_depth: usize,
+    /// Depth counter: >0 while parsing IF THEN/ELSE clauses so that
+    /// ELSE is not consumed by implicit concatenation.
+    if_depth: usize,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            do_header_depth: 0,
+            condition_depth: 0,
+            if_depth: 0,
+        }
     }
 
     pub fn parse(&mut self) -> RexxResult<Program> {
@@ -85,6 +103,15 @@ impl Parser {
         sym.eq_ignore_ascii_case(keyword)
     }
 
+    /// Check if current token is a symbol matching the given keyword.
+    fn is_keyword(&self, keyword: &str) -> bool {
+        if let TokenKind::Symbol(name) = self.peek_kind() {
+            Self::check_keyword(name, keyword)
+        } else {
+            false
+        }
+    }
+
     /// Peek ahead by `n` tokens (0 = current).
     fn peek_at(&self, n: usize) -> &TokenKind {
         let idx = self.pos + n;
@@ -92,6 +119,35 @@ impl Parser {
             &self.tokens[idx].kind
         } else {
             &TokenKind::Eof
+        }
+    }
+
+    /// Check if the current token is THEN (stops implicit concat in conditions).
+    fn is_then_keyword(&self) -> bool {
+        if let TokenKind::Symbol(name) = self.peek_kind() {
+            Self::check_keyword(name, "THEN")
+        } else {
+            false
+        }
+    }
+
+    /// Check if the current token is ELSE (stops implicit concat in IF clauses).
+    fn is_else_keyword(&self) -> bool {
+        if let TokenKind::Symbol(name) = self.peek_kind() {
+            Self::check_keyword(name, "ELSE")
+        } else {
+            false
+        }
+    }
+
+    /// Check if the current token is a DO-header keyword that should stop
+    /// implicit concatenation.
+    fn is_do_header_keyword(&self) -> bool {
+        if let TokenKind::Symbol(name) = self.peek_kind() {
+            let upper = name.to_uppercase();
+            matches!(upper.as_str(), "TO" | "BY" | "FOR" | "WHILE" | "UNTIL")
+        } else {
+            false
         }
     }
 
@@ -141,6 +197,62 @@ impl Parser {
                     loc,
                 });
             }
+
+            // IF instruction
+            if Self::check_keyword(name, "IF") {
+                return self.parse_if();
+            }
+
+            // DO instruction
+            if Self::check_keyword(name, "DO") {
+                return self.parse_do();
+            }
+
+            // SELECT instruction
+            if Self::check_keyword(name, "SELECT") {
+                return self.parse_select();
+            }
+
+            // LEAVE instruction
+            if Self::check_keyword(name, "LEAVE") {
+                return Ok(self.parse_leave());
+            }
+
+            // ITERATE instruction
+            if Self::check_keyword(name, "ITERATE") {
+                return Ok(self.parse_iterate());
+            }
+
+            // EXIT instruction
+            if Self::check_keyword(name, "EXIT") {
+                return self.parse_exit();
+            }
+
+            // RETURN instruction
+            if Self::check_keyword(name, "RETURN") {
+                return self.parse_return();
+            }
+
+            // Stray END outside DO/SELECT
+            if Self::check_keyword(name, "END") {
+                return Err(RexxDiagnostic::new(RexxError::UnexpectedEnd)
+                    .at(loc)
+                    .with_detail("END without matching DO or SELECT"));
+            }
+
+            // Stray THEN/ELSE
+            if Self::check_keyword(name, "THEN") || Self::check_keyword(name, "ELSE") {
+                return Err(RexxDiagnostic::new(RexxError::UnexpectedThenElse)
+                    .at(loc)
+                    .with_detail(format!("unexpected {}", name.to_uppercase())));
+            }
+
+            // Stray WHEN/OTHERWISE
+            if Self::check_keyword(name, "WHEN") || Self::check_keyword(name, "OTHERWISE") {
+                return Err(RexxDiagnostic::new(RexxError::UnexpectedWhenOtherwise)
+                    .at(loc)
+                    .with_detail(format!("unexpected {}", name.to_uppercase())));
+            }
         }
 
         // Default: command clause (expression evaluated and discarded)
@@ -175,6 +287,395 @@ impl Parser {
         Ok(Clause {
             kind: ClauseKind::Assignment { target, expr },
             loc: loc.clone(),
+        })
+    }
+
+    // ── control flow parsing ────────────────────────────────────────
+
+    /// Parse: IF expr THEN clause [ELSE clause]
+    fn parse_if(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume IF
+
+        // Parse condition expression (with THEN suppression)
+        self.condition_depth += 1;
+        let condition = self.parse_expression()?;
+        self.condition_depth -= 1;
+
+        // Skip terminators before THEN
+        self.skip_terminators();
+
+        // Expect THEN keyword
+        if !self.is_keyword("THEN") {
+            return Err(RexxDiagnostic::new(RexxError::ExpectedThen)
+                .at(self.loc())
+                .with_detail("expected THEN after IF condition"));
+        }
+        self.advance(); // consume THEN
+
+        // Skip terminators after THEN
+        self.skip_terminators();
+
+        // Parse one clause for THEN branch (with ELSE suppression)
+        self.if_depth += 1;
+        let then_clause = Box::new(self.parse_clause()?);
+
+        // Check for ELSE: skip terminators and look for ELSE keyword
+        let saved_pos = self.pos;
+        self.skip_terminators();
+        let else_clause = if self.is_keyword("ELSE") {
+            self.advance(); // consume ELSE
+            self.skip_terminators();
+            let clause = self.parse_clause()?;
+            Some(Box::new(clause))
+        } else {
+            // Restore position — those terminators might be meaningful
+            self.pos = saved_pos;
+            None
+        };
+        self.if_depth -= 1;
+
+        Ok(Clause {
+            kind: ClauseKind::If {
+                condition,
+                then_clause,
+                else_clause,
+            },
+            loc,
+        })
+    }
+
+    /// Parse: DO [variant]; body; END [name]
+    fn parse_do(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume DO
+
+        // Disambiguate variant
+        // 1. DO; ... END  (simple) — next is terminator
+        // 2. DO FOREVER   — next is Symbol("FOREVER")
+        // 3. DO WHILE expr — next is Symbol("WHILE")
+        // 4. DO UNTIL expr — next is Symbol("UNTIL")
+        // 5. DO var = start [TO..BY..FOR..WHILE..UNTIL] — next is Symbol, peek(+1) is =
+        // 6. DO expr — counted loop
+
+        if self.is_terminator() {
+            // Simple DO block
+            self.skip_terminators();
+            let body = self.parse_do_body()?;
+            return Ok(Clause {
+                kind: ClauseKind::Do(Box::new(DoBlock {
+                    kind: DoKind::Simple,
+                    body,
+                    name: None,
+                })),
+                loc,
+            });
+        }
+
+        if self.is_keyword("FOREVER") {
+            self.advance(); // consume FOREVER
+            self.skip_terminators();
+            let body = self.parse_do_body()?;
+            return Ok(Clause {
+                kind: ClauseKind::Do(Box::new(DoBlock {
+                    kind: DoKind::Forever,
+                    body,
+                    name: None,
+                })),
+                loc,
+            });
+        }
+
+        if self.is_keyword("WHILE") {
+            self.advance(); // consume WHILE
+            let cond = self.parse_expression()?;
+            self.skip_terminators();
+            let body = self.parse_do_body()?;
+            return Ok(Clause {
+                kind: ClauseKind::Do(Box::new(DoBlock {
+                    kind: DoKind::While(cond),
+                    body,
+                    name: None,
+                })),
+                loc,
+            });
+        }
+
+        if self.is_keyword("UNTIL") {
+            self.advance(); // consume UNTIL
+            let cond = self.parse_expression()?;
+            self.skip_terminators();
+            let body = self.parse_do_body()?;
+            return Ok(Clause {
+                kind: ClauseKind::Do(Box::new(DoBlock {
+                    kind: DoKind::Until(cond),
+                    body,
+                    name: None,
+                })),
+                loc,
+            });
+        }
+
+        // Check for controlled loop: Symbol followed by =
+        if let TokenKind::Symbol(_) = self.peek_kind()
+            && matches!(self.peek_at(1), TokenKind::Assign)
+        {
+            return self.parse_controlled_do(loc);
+        }
+
+        // Counted DO: DO expr
+        let count_expr = self.parse_expression()?;
+        self.skip_terminators();
+        let body = self.parse_do_body()?;
+        Ok(Clause {
+            kind: ClauseKind::Do(Box::new(DoBlock {
+                kind: DoKind::Count(count_expr),
+                body,
+                name: None,
+            })),
+            loc,
+        })
+    }
+
+    /// Parse controlled DO: DO var = start [TO limit] [BY step] [FOR count] [WHILE cond] [UNTIL cond]
+    fn parse_controlled_do(&mut self, loc: SourceLoc) -> RexxResult<Clause> {
+        let var_name = if let TokenKind::Symbol(s) = self.peek_kind() {
+            s.to_uppercase()
+        } else {
+            unreachable!()
+        };
+        self.advance(); // consume variable name
+        self.advance(); // consume =
+
+        // Parse start expression with do_header_depth guard
+        self.do_header_depth += 1;
+        let start = self.parse_expression()?;
+
+        let mut to: Option<Expr> = None;
+        let mut by: Option<Expr> = None;
+        let mut r#for: Option<Expr> = None;
+        let mut while_cond: Option<Expr> = None;
+        let mut until_cond: Option<Expr> = None;
+
+        // Parse optional TO/BY/FOR/WHILE/UNTIL in any order
+        loop {
+            if self.is_keyword("TO") {
+                self.advance();
+                to = Some(self.parse_expression()?);
+            } else if self.is_keyword("BY") {
+                self.advance();
+                by = Some(self.parse_expression()?);
+            } else if self.is_keyword("FOR") {
+                self.advance();
+                r#for = Some(self.parse_expression()?);
+            } else if self.is_keyword("WHILE") {
+                self.advance();
+                while_cond = Some(self.parse_expression()?);
+            } else if self.is_keyword("UNTIL") {
+                self.advance();
+                until_cond = Some(self.parse_expression()?);
+            } else {
+                break;
+            }
+        }
+
+        self.do_header_depth -= 1;
+
+        self.skip_terminators();
+        let body = self.parse_do_body()?;
+
+        Ok(Clause {
+            kind: ClauseKind::Do(Box::new(DoBlock {
+                kind: DoKind::Controlled(Box::new(ControlledLoop {
+                    var: var_name.clone(),
+                    start,
+                    to,
+                    by,
+                    r#for,
+                    while_cond,
+                    until_cond,
+                })),
+                body,
+                name: Some(var_name),
+            })),
+            loc,
+        })
+    }
+
+    /// Parse DO body: clauses until END [name]
+    fn parse_do_body(&mut self) -> RexxResult<Vec<Clause>> {
+        let mut body = Vec::new();
+        self.skip_terminators();
+        loop {
+            if self.at_end() {
+                return Err(RexxDiagnostic::new(RexxError::IncompleteBlock)
+                    .at(self.loc())
+                    .with_detail("expected END to close DO block"));
+            }
+            if self.is_keyword("END") {
+                self.advance(); // consume END
+                // Optionally consume a symbol after END (e.g., END i)
+                if let TokenKind::Symbol(_) = self.peek_kind()
+                    && !self.is_terminator()
+                {
+                    self.advance(); // consume the name after END
+                }
+                break;
+            }
+            body.push(self.parse_clause()?);
+            self.skip_terminators();
+        }
+        Ok(body)
+    }
+
+    /// Parse: SELECT; WHEN expr THEN clause...; ... [OTHERWISE; clause...;] END
+    fn parse_select(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume SELECT
+        self.skip_terminators();
+
+        let mut when_clauses: Vec<(Expr, Vec<Clause>)> = Vec::new();
+        let mut otherwise: Option<Vec<Clause>> = None;
+
+        loop {
+            self.skip_terminators();
+
+            if self.at_end() {
+                return Err(RexxDiagnostic::new(RexxError::IncompleteBlock)
+                    .at(self.loc())
+                    .with_detail("expected END to close SELECT"));
+            }
+
+            if self.is_keyword("END") {
+                self.advance(); // consume END
+                break;
+            }
+
+            if self.is_keyword("WHEN") {
+                self.advance(); // consume WHEN
+                self.condition_depth += 1;
+                let condition = self.parse_expression()?;
+                self.condition_depth -= 1;
+                self.skip_terminators();
+
+                if !self.is_keyword("THEN") {
+                    return Err(RexxDiagnostic::new(RexxError::ExpectedThen)
+                        .at(self.loc())
+                        .with_detail("expected THEN after WHEN condition"));
+                }
+                self.advance(); // consume THEN
+                self.skip_terminators();
+
+                // Parse one or more clauses for this WHEN
+                let mut body = Vec::new();
+                loop {
+                    if self.at_end()
+                        || self.is_keyword("WHEN")
+                        || self.is_keyword("OTHERWISE")
+                        || self.is_keyword("END")
+                    {
+                        break;
+                    }
+                    body.push(self.parse_clause()?);
+                    self.skip_terminators();
+                }
+                when_clauses.push((condition, body));
+                continue;
+            }
+
+            if self.is_keyword("OTHERWISE") {
+                self.advance(); // consume OTHERWISE
+                self.skip_terminators();
+
+                let mut body = Vec::new();
+                loop {
+                    if self.at_end() || self.is_keyword("END") {
+                        break;
+                    }
+                    body.push(self.parse_clause()?);
+                    self.skip_terminators();
+                }
+                otherwise = Some(body);
+                continue;
+            }
+
+            return Err(RexxDiagnostic::new(RexxError::ExpectedWhenOtherwise)
+                .at(self.loc())
+                .with_detail("expected WHEN, OTHERWISE, or END in SELECT"));
+        }
+
+        Ok(Clause {
+            kind: ClauseKind::Select {
+                when_clauses,
+                otherwise,
+            },
+            loc,
+        })
+    }
+
+    /// Parse: LEAVE [name]
+    fn parse_leave(&mut self) -> Clause {
+        let loc = self.loc();
+        self.advance(); // consume LEAVE
+        let name = self.try_consume_symbol_name();
+        Clause {
+            kind: ClauseKind::Leave(name),
+            loc,
+        }
+    }
+
+    /// Parse: ITERATE [name]
+    fn parse_iterate(&mut self) -> Clause {
+        let loc = self.loc();
+        self.advance(); // consume ITERATE
+        let name = self.try_consume_symbol_name();
+        Clause {
+            kind: ClauseKind::Iterate(name),
+            loc,
+        }
+    }
+
+    /// Try to consume an optional symbol name (for LEAVE/ITERATE).
+    fn try_consume_symbol_name(&mut self) -> Option<String> {
+        if self.is_terminator() {
+            return None;
+        }
+        if let TokenKind::Symbol(s) = self.peek_kind() {
+            let n = s.to_uppercase();
+            self.advance();
+            Some(n)
+        } else {
+            None
+        }
+    }
+
+    /// Parse: EXIT [expr]
+    fn parse_exit(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume EXIT
+        let expr = if self.is_terminator() {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        Ok(Clause {
+            kind: ClauseKind::Exit(expr),
+            loc,
+        })
+    }
+
+    /// Parse: RETURN [expr]
+    fn parse_return(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume RETURN
+        let expr = if self.is_terminator() {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        Ok(Clause {
+            kind: ClauseKind::Return(expr),
+            loc,
         })
     }
 
@@ -278,6 +779,24 @@ impl Parser {
                     right: Box::new(right),
                 };
                 continue;
+            }
+
+            // When inside a DO header, suppress implicit concatenation for
+            // DO-header keywords so they can be consumed by the header parser.
+            if self.do_header_depth > 0 && self.is_do_header_keyword() {
+                break;
+            }
+
+            // When inside a condition (IF/WHEN), suppress implicit concatenation
+            // for THEN so it can be consumed by the control flow parser.
+            if self.condition_depth > 0 && self.is_then_keyword() {
+                break;
+            }
+
+            // When inside an IF, suppress implicit concatenation for ELSE
+            // so it can be consumed by the IF parser.
+            if self.if_depth > 0 && self.is_else_keyword() {
+                break;
             }
 
             // Implicit concatenation: the next token can start a term,
@@ -703,5 +1222,85 @@ mod tests {
             }
             other => panic!("expected FunctionCall, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_if_then() {
+        let prog = parse("if 1 then say 'yes'");
+        assert!(matches!(&prog.clauses[0].kind, ClauseKind::If { .. }));
+    }
+
+    #[test]
+    fn parse_if_then_else() {
+        let prog = parse("if 0 then say 'no'; else say 'yes'");
+        match &prog.clauses[0].kind {
+            ClauseKind::If { else_clause, .. } => {
+                assert!(else_clause.is_some());
+            }
+            other => panic!("expected If, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_simple_do() {
+        let prog = parse("do; say 'a'; end");
+        match &prog.clauses[0].kind {
+            ClauseKind::Do(block) => {
+                assert!(matches!(block.kind, DoKind::Simple));
+                assert_eq!(block.body.len(), 1);
+            }
+            other => panic!("expected Do, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_do_count() {
+        let prog = parse("do 3; say 'x'; end");
+        match &prog.clauses[0].kind {
+            ClauseKind::Do(block) => {
+                assert!(matches!(block.kind, DoKind::Count(_)));
+            }
+            other => panic!("expected Do Count, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_controlled_do() {
+        let prog = parse("do i = 1 to 5; say i; end");
+        match &prog.clauses[0].kind {
+            ClauseKind::Do(block) => {
+                assert!(matches!(block.kind, DoKind::Controlled(_)));
+            }
+            other => panic!("expected Do Controlled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_select() {
+        let prog = parse("select; when 1 then say 'one'; otherwise say 'other'; end");
+        assert!(matches!(&prog.clauses[0].kind, ClauseKind::Select { .. }));
+    }
+
+    #[test]
+    fn parse_leave() {
+        let prog = parse("do forever; leave; end");
+        match &prog.clauses[0].kind {
+            ClauseKind::Do(block) => {
+                assert!(matches!(&block.body[0].kind, ClauseKind::Leave(None)));
+            }
+            other => panic!("expected Do, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_exit() {
+        let prog = parse("exit");
+        assert!(matches!(&prog.clauses[0].kind, ClauseKind::Exit(None)));
+    }
+
+    #[test]
+    fn parse_exit_with_expr() {
+        let prog = parse("exit 0");
+        assert!(matches!(&prog.clauses[0].kind, ClauseKind::Exit(Some(_))));
     }
 }
