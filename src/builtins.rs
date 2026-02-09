@@ -299,13 +299,28 @@ fn bif_lastpos(args: &[RexxValue]) -> RexxResult<RexxValue> {
 fn bif_index(args: &[RexxValue]) -> RexxResult<RexxValue> {
     check_args("INDEX", args, 2, 3)?;
     // INDEX(haystack, needle [,start]) — like POS but args swapped
-    let haystack_val = args[0].clone();
-    let needle_val = args[1].clone();
-    let mut new_args = vec![needle_val, haystack_val];
-    if args.len() >= 3 {
-        new_args.push(args[2].clone());
+    let needle = args[1].as_str();
+    let haystack = args[0].as_str();
+    let start = if args.len() >= 3 {
+        to_positive_whole("INDEX", &args[2])?
+    } else {
+        1
+    };
+    if needle.is_empty() {
+        return Ok(RexxValue::new("0"));
     }
-    bif_pos(&new_args)
+    let start0 = start - 1;
+    let byte_start = haystack
+        .char_indices()
+        .nth(start0)
+        .map_or(haystack.len(), |(i, _)| i);
+    match haystack[byte_start..].find(needle) {
+        Some(byte_pos) => {
+            let char_pos = haystack[..byte_start + byte_pos].chars().count() + 1;
+            Ok(RexxValue::new(char_pos.to_string()))
+        }
+        None => Ok(RexxValue::new("0")),
+    }
 }
 
 fn bif_copies(args: &[RexxValue]) -> RexxResult<RexxValue> {
@@ -1043,6 +1058,10 @@ fn bif_c2d(args: &[RexxValue]) -> RexxResult<RexxValue> {
         if length == 0 {
             return Ok(RexxValue::new("0"));
         }
+        if length > 16 {
+            return Err(RexxDiagnostic::new(RexxError::BadArithmetic)
+                .with_detail(format!("C2D: length {length} exceeds maximum of 16")));
+        }
         let bytes: Vec<u8> = s.bytes().collect();
         let start = bytes.len().saturating_sub(length);
         let relevant = &bytes[start..];
@@ -1065,6 +1084,14 @@ fn bif_c2d(args: &[RexxValue]) -> RexxResult<RexxValue> {
             Ok(RexxValue::new(val.to_string()))
         }
     } else {
+        let byte_count = s.len();
+        if byte_count > 16 {
+            return Err(
+                RexxDiagnostic::new(RexxError::BadArithmetic).with_detail(format!(
+                    "C2D: string length {byte_count} exceeds maximum of 16"
+                )),
+            );
+        }
         let mut val: u128 = 0;
         for b in s.bytes() {
             val = (val << 8) | u128::from(b);
@@ -1167,7 +1194,7 @@ fn bif_x2c(args: &[RexxValue]) -> RexxResult<RexxValue> {
     } else {
         format!("0{hex}")
     };
-    let mut result = String::new();
+    let mut result = String::with_capacity(padded.len() / 2);
     let mut i = 0;
     while i < padded.len() {
         let byte_val = u8::from_str_radix(&padded[i..i + 2], 16).map_err(|_| {
@@ -1193,7 +1220,7 @@ fn bif_b2x(args: &[RexxValue]) -> RexxResult<RexxValue> {
     // Pad to multiple of 4
     let pad_len = (4 - bin.len() % 4) % 4;
     let padded = format!("{}{bin}", "0".repeat(pad_len));
-    let mut result = String::new();
+    let mut result = String::with_capacity(padded.len() / 4);
     let mut i = 0;
     while i < padded.len() {
         let nibble = u8::from_str_radix(&padded[i..i + 4], 2).unwrap_or(0);
@@ -1232,10 +1259,11 @@ fn pad_or_truncate_bytes(v: &mut Vec<u8>, length: usize) {
     if v.len() > length {
         let start = v.len() - length;
         *v = v[start..].to_vec();
-    } else {
-        while v.len() < length {
-            v.insert(0, 0);
-        }
+    } else if v.len() < length {
+        let pad_count = length - v.len();
+        let mut result = vec![0u8; pad_count];
+        result.append(v);
+        *v = result;
     }
 }
 
@@ -1243,10 +1271,11 @@ fn pad_or_truncate_bytes_signed(v: &mut Vec<u8>, length: usize) {
     if v.len() > length {
         let start = v.len() - length;
         *v = v[start..].to_vec();
-    } else {
-        while v.len() < length {
-            v.insert(0, 0xFF);
-        }
+    } else if v.len() < length {
+        let pad_count = length - v.len();
+        let mut result = vec![0xFFu8; pad_count];
+        result.append(v);
+        *v = result;
     }
 }
 
