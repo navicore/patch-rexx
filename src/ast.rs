@@ -224,7 +224,7 @@ pub enum SignalAction {
 }
 
 /// Trappable conditions.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Condition {
     Error,
     Failure,

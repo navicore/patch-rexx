@@ -5,8 +5,8 @@
 //! recognised by context at the start of a clause.
 
 use crate::ast::{
-    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, ParseSource,
-    ParseTemplate, Program, TemplateElement, UnaryOp,
+    AssignTarget, BinOp, Clause, ClauseKind, Condition, ControlledLoop, DoBlock, DoKind, Expr,
+    ParseSource, ParseTemplate, Program, SignalAction, TemplateElement, UnaryOp,
 };
 use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
 use crate::lexer::{Token, TokenKind};
@@ -277,6 +277,11 @@ impl Parser {
             // DROP instruction
             if Self::check_keyword(name, "DROP") {
                 return Ok(self.parse_drop());
+            }
+
+            // SIGNAL instruction
+            if Self::check_keyword(name, "SIGNAL") {
+                return self.parse_signal();
             }
 
             // Stray END outside DO/SELECT
@@ -1020,6 +1025,98 @@ impl Parser {
         Clause {
             kind: ClauseKind::Drop(names),
             loc,
+        }
+    }
+
+    // ── SIGNAL parsing ───────────────────────────────────────────────
+
+    /// Parse: SIGNAL label | SIGNAL VALUE expr | SIGNAL ON condition [NAME label] | SIGNAL OFF condition
+    fn parse_signal(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume SIGNAL
+
+        if self.is_keyword("ON") {
+            self.advance(); // consume ON
+            let condition = self.parse_condition()?;
+            let name = if self.is_keyword("NAME") {
+                self.advance(); // consume NAME
+                if let TokenKind::Symbol(s) = self.peek_kind() {
+                    let n = s.to_uppercase();
+                    self.advance();
+                    Some(n)
+                } else {
+                    return Err(RexxDiagnostic::new(RexxError::ExpectedSymbol)
+                        .at(self.loc())
+                        .with_detail("expected label name after SIGNAL ON condition NAME"));
+                }
+            } else {
+                None
+            };
+            return Ok(Clause {
+                kind: ClauseKind::Signal(SignalAction::On { condition, name }),
+                loc,
+            });
+        }
+
+        if self.is_keyword("OFF") {
+            self.advance(); // consume OFF
+            let condition = self.parse_condition()?;
+            return Ok(Clause {
+                kind: ClauseKind::Signal(SignalAction::Off(condition)),
+                loc,
+            });
+        }
+
+        if self.is_keyword("VALUE") {
+            self.advance(); // consume VALUE
+            let expr = self.parse_expression()?;
+            return Ok(Clause {
+                kind: ClauseKind::Signal(SignalAction::Value(expr)),
+                loc,
+            });
+        }
+
+        // SIGNAL label — must be a symbol
+        if let TokenKind::Symbol(s) = self.peek_kind() {
+            let label = s.to_uppercase();
+            self.advance();
+            return Ok(Clause {
+                kind: ClauseKind::Signal(SignalAction::Label(label)),
+                loc,
+            });
+        }
+
+        Err(RexxDiagnostic::new(RexxError::ExpectedSymbol)
+            .at(self.loc())
+            .with_detail("expected label name, VALUE, ON, or OFF after SIGNAL"))
+    }
+
+    /// Parse a condition name: ERROR, FAILURE, HALT, NOVALUE, NOTREADY, SYNTAX, LOSTDIGITS
+    fn parse_condition(&mut self) -> RexxResult<Condition> {
+        if let TokenKind::Symbol(s) = self.peek_kind() {
+            let upper = s.to_uppercase();
+            let condition = match upper.as_str() {
+                "ERROR" => Condition::Error,
+                "FAILURE" => Condition::Failure,
+                "HALT" => Condition::Halt,
+                "NOVALUE" => Condition::NoValue,
+                "NOTREADY" => Condition::NotReady,
+                "SYNTAX" => Condition::Syntax,
+                "LOSTDIGITS" => Condition::LostDigits,
+                _ => {
+                    return Err(RexxDiagnostic::new(RexxError::InvalidSubKeyword)
+                        .at(self.loc())
+                        .with_detail(format!(
+                            "'{upper}' is not a valid condition name; expected ERROR, FAILURE, HALT, NOVALUE, NOTREADY, SYNTAX, or LOSTDIGITS"
+                        )));
+                }
+            };
+            self.advance();
+            Ok(condition)
+        } else {
+            Err(RexxDiagnostic::new(RexxError::ExpectedSymbol)
+                .at(self.loc())
+                .with_detail("expected condition name"))
         }
     }
 

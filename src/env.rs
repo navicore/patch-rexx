@@ -8,11 +8,22 @@ use std::collections::HashMap;
 
 use crate::value::RexxValue;
 
+/// Information about the most recently trapped condition, read by `CONDITION()` BIF.
+#[derive(Debug, Clone, Default)]
+pub struct ConditionInfoData {
+    pub condition: String,
+    pub description: String,
+    pub instruction: String,
+    pub status: String,
+}
+
 /// A variable environment (scope).
 #[derive(Debug, Clone)]
 pub struct Environment {
     /// Stack of variable scopes. Last is the current (innermost) scope.
     scopes: Vec<Scope>,
+    /// Most recent condition trap info (for `CONDITION()` BIF).
+    pub condition_info: Option<ConditionInfoData>,
 }
 
 /// A single variable scope.
@@ -40,6 +51,7 @@ impl Environment {
     pub fn new() -> Self {
         Self {
             scopes: vec![Scope::new()],
+            condition_info: None,
         }
     }
 
@@ -157,6 +169,11 @@ impl Environment {
                 }
             }
         }
+    }
+
+    /// Set condition info (called when a trap fires).
+    pub fn set_condition_info(&mut self, info: ConditionInfoData) {
+        self.condition_info = Some(info);
     }
 
     /// Check if a variable has been explicitly set (for SIGNAL ON NOVALUE).

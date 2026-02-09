@@ -85,6 +85,10 @@ fn run_line(
             error::RexxDiagnostic::new(error::RexxError::InvalidLeaveIterate)
                 .with_detail("LEAVE/ITERATE outside of DO loop"),
         ),
+        eval::ExecSignal::Signal(label) => {
+            Err(error::RexxDiagnostic::new(error::RexxError::LabelNotFound)
+                .with_detail(format!("label '{label}' not found")))
+        }
     }
 }
 

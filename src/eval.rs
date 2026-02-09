@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use crate::ast::{
-    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, ParseSource,
-    ParseTemplate, Program, TailElement, TemplateElement, UnaryOp,
+    AssignTarget, BinOp, Clause, ClauseKind, Condition, ControlledLoop, DoBlock, DoKind, Expr,
+    ParseSource, ParseTemplate, Program, SignalAction, TailElement, TemplateElement, UnaryOp,
 };
 use crate::env::Environment;
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
@@ -23,6 +23,8 @@ pub enum ExecSignal {
     Iterate(Option<String>),
     Exit(Option<RexxValue>),
     Return(Option<RexxValue>),
+    /// SIGNAL transfers control to a label, abandoning all blocks.
+    Signal(String),
 }
 
 /// Pending EXIT state — distinguishes "no pending exit" from "exit with/without value".
@@ -53,6 +55,10 @@ pub struct Evaluator<'a> {
     labels: HashMap<String, usize>,
     arg_stack: Vec<Vec<RexxValue>>,
     pending_exit: PendingExit,
+    /// Active condition traps: condition → target label name.
+    traps: HashMap<Condition, String>,
+    /// Pending signal from a trap (e.g., NOVALUE). Fires after clause completes.
+    pending_signal: Option<String>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -65,6 +71,8 @@ impl<'a> Evaluator<'a> {
             labels,
             arg_stack: Vec::new(),
             pending_exit: PendingExit::None,
+            traps: HashMap::new(),
+            pending_signal: None,
         }
     }
 
@@ -79,14 +87,29 @@ impl<'a> Evaluator<'a> {
     }
 
     pub fn exec(&mut self) -> RexxResult<ExecSignal> {
-        self.exec_from(0)
+        let mut start = 0;
+        loop {
+            match self.exec_from(start)? {
+                ExecSignal::Signal(label) => {
+                    let &idx = self.labels.get(&label).ok_or_else(|| {
+                        RexxDiagnostic::new(RexxError::LabelNotFound)
+                            .with_detail(format!("label '{label}' not found"))
+                    })?;
+                    start = idx + 1;
+                }
+                other => return Ok(other),
+            }
+        }
     }
 
     fn exec_from(&mut self, start: usize) -> RexxResult<ExecSignal> {
         for clause in &self.program.clauses[start..] {
-            let signal = self.exec_clause(clause)?;
+            let signal = self.exec_clause_outer(clause)?;
             if let Some(signal) = self.pending_exit.take_signal() {
                 return Ok(signal);
+            }
+            if let Some(label) = self.pending_signal.take() {
+                return Ok(ExecSignal::Signal(label));
             }
             if !matches!(signal, ExecSignal::Normal) {
                 return Ok(signal);
@@ -97,15 +120,45 @@ impl<'a> Evaluator<'a> {
 
     fn exec_body(&mut self, body: &[Clause]) -> RexxResult<ExecSignal> {
         for clause in body {
-            let signal = self.exec_clause(clause)?;
+            let signal = self.exec_clause_outer(clause)?;
             if let Some(signal) = self.pending_exit.take_signal() {
                 return Ok(signal);
+            }
+            if let Some(label) = self.pending_signal.take() {
+                return Ok(ExecSignal::Signal(label));
             }
             if !matches!(signal, ExecSignal::Normal) {
                 return Ok(signal);
             }
         }
         Ok(ExecSignal::Normal)
+    }
+
+    /// Outer clause executor: wraps `exec_clause` with SYNTAX trap support.
+    fn exec_clause_outer(&mut self, clause: &Clause) -> RexxResult<ExecSignal> {
+        match self.exec_clause(clause) {
+            Ok(signal) => Ok(signal),
+            Err(diag) => {
+                if let Some(label) = self.traps.get(&Condition::Syntax).cloned() {
+                    // Set RC to the error number
+                    self.env
+                        .set("RC", RexxValue::new(diag.error.number().to_string()));
+                    // Set condition info
+                    let desc = diag.detail.unwrap_or_default();
+                    self.env.set_condition_info(crate::env::ConditionInfoData {
+                        condition: "SYNTAX".to_string(),
+                        description: desc,
+                        instruction: "SIGNAL".to_string(),
+                        status: "ON".to_string(),
+                    });
+                    // Disable the trap (per REXX: trap fires once)
+                    self.traps.remove(&Condition::Syntax);
+                    Ok(ExecSignal::Signal(label))
+                } else {
+                    Err(diag)
+                }
+            }
+        }
     }
 
     fn exec_clause(&mut self, clause: &Clause) -> RexxResult<ExecSignal> {
@@ -165,6 +218,7 @@ impl<'a> Evaluator<'a> {
                 Ok(ExecSignal::Return(val))
             }
             ClauseKind::Call { name, args } => self.exec_call(name, args),
+            ClauseKind::Signal(action) => self.exec_signal(action),
             ClauseKind::Label(_) | ClauseKind::Nop => Ok(ExecSignal::Normal),
             ClauseKind::Procedure(_) => Err(RexxDiagnostic::new(RexxError::UnexpectedProcedure)
                 .with_detail("PROCEDURE must be the first instruction in a called routine")),
@@ -252,16 +306,54 @@ impl<'a> Evaluator<'a> {
                     self.env.drop("RESULT");
                     Ok(ExecSignal::Normal)
                 }
-                ExecSignal::Exit(_) => Ok(signal),
+                ExecSignal::Exit(_) | ExecSignal::Signal(_) => Ok(signal),
                 ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(ExecSignal::Normal),
             }
-        } else if let Some(result) = crate::builtins::call_builtin(name, &args, &self.settings) {
+        } else if let Some(result) =
+            crate::builtins::call_builtin(name, &args, &self.settings, self.env)
+        {
             let val = result?;
             self.env.set("RESULT", val);
             Ok(ExecSignal::Normal)
         } else {
             Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
                 .with_detail(format!("routine '{name}' not found")))
+        }
+    }
+
+    /// Execute a SIGNAL instruction.
+    fn exec_signal(&mut self, action: &SignalAction) -> RexxResult<ExecSignal> {
+        match action {
+            SignalAction::Label(label) => Ok(ExecSignal::Signal(label.clone())),
+            SignalAction::Value(expr) => {
+                let val = self.eval_expr(expr)?;
+                let label = val.as_str().to_uppercase();
+                Ok(ExecSignal::Signal(label))
+            }
+            SignalAction::On { condition, name } => {
+                let label = name
+                    .clone()
+                    .unwrap_or_else(|| Self::condition_default_label(condition));
+                self.traps.insert(condition.clone(), label);
+                Ok(ExecSignal::Normal)
+            }
+            SignalAction::Off(condition) => {
+                self.traps.remove(condition);
+                Ok(ExecSignal::Normal)
+            }
+        }
+    }
+
+    /// Default label name for a condition (the condition name itself, uppercased).
+    fn condition_default_label(condition: &Condition) -> String {
+        match condition {
+            Condition::Error => "ERROR".to_string(),
+            Condition::Failure => "FAILURE".to_string(),
+            Condition::Halt => "HALT".to_string(),
+            Condition::NoValue => "NOVALUE".to_string(),
+            Condition::NotReady => "NOTREADY".to_string(),
+            Condition::Syntax => "SYNTAX".to_string(),
+            Condition::LostDigits => "LOSTDIGITS".to_string(),
         }
     }
 
@@ -605,7 +697,9 @@ impl<'a> Evaluator<'a> {
                     }
                     return Ok(signal);
                 }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
+                    return Ok(signal);
+                }
             }
         }
     }
@@ -629,7 +723,9 @@ impl<'a> Evaluator<'a> {
                     }
                     return Ok(signal);
                 }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
+                    return Ok(signal);
+                }
             }
         }
         Ok(ExecSignal::Normal)
@@ -656,7 +752,9 @@ impl<'a> Evaluator<'a> {
                     }
                     return Ok(signal);
                 }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
+                    return Ok(signal);
+                }
             }
         }
         Ok(ExecSignal::Normal)
@@ -679,7 +777,9 @@ impl<'a> Evaluator<'a> {
                     }
                     // ITERATE matched: continue to UNTIL check
                 }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
+                    return Ok(signal);
+                }
             }
             let cond_val = self.eval_expr(cond_expr)?;
             if to_logical(&cond_val)? {
@@ -784,7 +884,9 @@ impl<'a> Evaluator<'a> {
                     }
                     // ITERATE matched: fall through to increment
                 }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) => return Ok(signal),
+                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
+                    return Ok(signal);
+                }
             }
 
             // Check UNTIL condition (after body, before increment).
@@ -876,7 +978,23 @@ impl<'a> Evaluator<'a> {
         match expr {
             Expr::StringLit(s) => Ok(RexxValue::new(s.clone())),
             Expr::Number(n) => Ok(RexxValue::new(n.clone())),
-            Expr::Symbol(name) => Ok(self.env.get(name)),
+            Expr::Symbol(name) => {
+                if !self.env.is_set(name)
+                    && let Some(label) = self.traps.get(&Condition::NoValue).cloned()
+                {
+                    // Set condition info before firing
+                    self.env.set_condition_info(crate::env::ConditionInfoData {
+                        condition: "NOVALUE".to_string(),
+                        description: name.clone(),
+                        instruction: "SIGNAL".to_string(),
+                        status: "ON".to_string(),
+                    });
+                    // Disable the trap (fires once per REXX spec)
+                    self.traps.remove(&Condition::NoValue);
+                    self.pending_signal = Some(label);
+                }
+                Ok(self.env.get(name))
+            }
             Expr::Compound { stem, tail } => {
                 let resolved = self.resolve_tail(tail);
                 Ok(self.env.get_compound(stem, &resolved))
@@ -912,10 +1030,17 @@ impl<'a> Evaluator<'a> {
                             self.pending_exit = PendingExit::WithValue(val);
                             Ok(RexxValue::new(""))
                         }
+                        ExecSignal::Signal(_) => {
+                            // Propagate signal as pending — we can't return ExecSignal from eval_expr
+                            if let ExecSignal::Signal(label) = signal {
+                                self.pending_signal = Some(label);
+                            }
+                            Ok(RexxValue::new(""))
+                        }
                         ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
                     }
                 } else if let Some(result) =
-                    crate::builtins::call_builtin(name, &evaluated_args, &self.settings)
+                    crate::builtins::call_builtin(name, &evaluated_args, &self.settings, self.env)
                 {
                     result
                 } else {
