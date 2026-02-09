@@ -5,7 +5,11 @@
       "Bash(cargo test:*)",
       "Bash(cargo run:*)",
       "Bash(cargo clippy:*)",
-      "Bash(cargo check:*)"
+      "Bash(cargo check:*)",
+      "WebSearch",
+      "WebFetch(domain:manmrk.net)",
+      "WebFetch(domain:www.manmrk.net)",
+      "WebFetch(domain:grimore.org)"
     ]
   }
 }
