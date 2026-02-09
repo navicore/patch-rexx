@@ -13,8 +13,13 @@ use crate::ast::{
     ParseSource, ParseTemplate, Program, SignalAction, TailElement, TemplateElement, UnaryOp,
 };
 use crate::env::Environment;
-use crate::error::{RexxDiagnostic, RexxError, RexxResult};
+use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
+use crate::lexer::Lexer;
+use crate::parser::Parser;
 use crate::value::{NumericSettings, RexxValue};
+
+/// Maximum nesting depth for INTERPRET to prevent stack overflow.
+const MAX_INTERPRET_DEPTH: usize = 100;
 
 /// Signal returned by clause/block execution for control flow.
 pub enum ExecSignal {
@@ -59,6 +64,8 @@ pub struct Evaluator<'a> {
     traps: HashMap<Condition, String>,
     /// Pending signal from a trap (e.g., NOVALUE). Fires after clause completes.
     pending_signal: Option<String>,
+    /// Current INTERPRET nesting depth (for recursion limit).
+    interpret_depth: usize,
 }
 
 impl<'a> Evaluator<'a> {
@@ -73,6 +80,7 @@ impl<'a> Evaluator<'a> {
             pending_exit: PendingExit::None,
             traps: HashMap::new(),
             pending_signal: None,
+            interpret_depth: 0,
         }
     }
 
@@ -242,11 +250,99 @@ impl<'a> Evaluator<'a> {
                 }
                 Ok(ExecSignal::Normal)
             }
-            _ => {
+            ClauseKind::Interpret(expr) => self.exec_interpret(expr),
+            ClauseKind::Numeric(_)
+            | ClauseKind::Address(_)
+            | ClauseKind::Push(_)
+            | ClauseKind::Queue(_)
+            | ClauseKind::Trace(_) => {
                 // Other clause types not yet implemented
                 Ok(ExecSignal::Normal)
             }
         }
+    }
+
+    // ── INTERPRET execution ────────────────────────────────────────
+
+    /// Execute an INTERPRET instruction: evaluate expr to string, lex, parse, execute.
+    fn exec_interpret(&mut self, expr: &Expr) -> RexxResult<ExecSignal> {
+        let val = self.eval_expr(expr)?;
+        if self.pending_exit.is_pending() {
+            return Ok(ExecSignal::Normal);
+        }
+        if self.pending_signal.is_some() {
+            return Ok(ExecSignal::Normal);
+        }
+
+        let source = val.as_str().to_string();
+        if source.is_empty() {
+            return Ok(ExecSignal::Normal);
+        }
+
+        // Depth guard
+        if self.interpret_depth >= MAX_INTERPRET_DEPTH {
+            return Err(RexxDiagnostic::new(RexxError::ResourceExhausted)
+                .at(SourceLoc::new(0, 0))
+                .with_detail("INTERPRET recursion depth limit exceeded"));
+        }
+
+        // Lex and parse the interpreted string
+        let mut lexer = Lexer::new(&source);
+        let tokens = lexer.tokenize()?;
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse()?;
+
+        // Build label map for the interpreted code
+        let mut labels = HashMap::new();
+        for (i, clause) in program.clauses.iter().enumerate() {
+            if let ClauseKind::Label(name) = &clause.kind {
+                labels.entry(name.clone()).or_insert(i);
+            }
+        }
+
+        self.interpret_depth += 1;
+        let result = self.exec_interpret_body(&program.clauses, &labels);
+        self.interpret_depth -= 1;
+
+        result
+    }
+
+    /// Execute interpreted clauses with a restart loop for local SIGNAL targets.
+    fn exec_interpret_body(
+        &mut self,
+        clauses: &[Clause],
+        labels: &HashMap<String, usize>,
+    ) -> RexxResult<ExecSignal> {
+        let mut start = 0;
+        loop {
+            match self.exec_interpret_from(clauses, start)? {
+                ExecSignal::Signal(ref label) => {
+                    if let Some(&idx) = labels.get(label) {
+                        start = idx + 1; // restart locally
+                    } else {
+                        return Ok(ExecSignal::Signal(label.clone()));
+                    }
+                }
+                other => return Ok(other),
+            }
+        }
+    }
+
+    /// Execute interpreted clauses from a given index (mirrors `exec_from` for interpreted code).
+    fn exec_interpret_from(&mut self, clauses: &[Clause], start: usize) -> RexxResult<ExecSignal> {
+        for clause in &clauses[start..] {
+            let signal = self.exec_clause_outer(clause)?;
+            if let Some(signal) = self.pending_exit.take_signal() {
+                return Ok(signal);
+            }
+            if let Some(label) = self.pending_signal.take() {
+                return Ok(ExecSignal::Signal(label));
+            }
+            if !matches!(signal, ExecSignal::Normal) {
+                return Ok(signal);
+            }
+        }
+        Ok(ExecSignal::Normal)
     }
 
     fn call_routine(&mut self, name: &str, args: Vec<RexxValue>) -> RexxResult<ExecSignal> {

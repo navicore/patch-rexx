@@ -284,6 +284,11 @@ impl Parser {
                 return self.parse_signal();
             }
 
+            // INTERPRET instruction
+            if Self::check_keyword(name, "INTERPRET") {
+                return self.parse_interpret();
+            }
+
             // Stray END outside DO/SELECT
             if Self::check_keyword(name, "END") {
                 return Err(RexxDiagnostic::new(RexxError::UnexpectedEnd)
@@ -1118,6 +1123,23 @@ impl Parser {
                 .at(self.loc())
                 .with_detail("expected condition name"))
         }
+    }
+
+    // ── INTERPRET parsing ─────────────────────────────────────────────
+
+    /// Parse: INTERPRET expr
+    fn parse_interpret(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume INTERPRET
+        let expr = if self.is_terminator() {
+            Expr::StringLit(String::new())
+        } else {
+            self.parse_expression()?
+        };
+        Ok(Clause {
+            kind: ClauseKind::Interpret(expr),
+            loc,
+        })
     }
 
     // ── expression parsing (precedence climbing) ────────────────────
