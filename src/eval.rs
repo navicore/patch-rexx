@@ -350,7 +350,11 @@ impl<'a> Evaluator<'a> {
                     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                     let char_pos = if pos > 0 { (pos - 1) as usize } else { 0 };
                     let target = Self::char_pos_to_byte_offset(source, char_pos);
-                    let section = if target > cursor { &source[cursor..target] } else { "" };
+                    let section = if target > cursor {
+                        &source[cursor..target]
+                    } else {
+                        ""
+                    };
                     self.assign_section(section, &targets);
                     cursor = target;
                     i += 1;
@@ -360,9 +364,13 @@ impl<'a> Evaluator<'a> {
                     let target = if *offset >= 0 {
                         Self::advance_chars(source, cursor, *offset as usize)
                     } else {
-                        Self::retreat_chars(source, cursor, (-*offset) as usize)
+                        Self::retreat_chars(source, cursor, offset.unsigned_abs() as usize)
                     };
-                    let section = if target > cursor { &source[cursor..target] } else { "" };
+                    let section = if target > cursor {
+                        &source[cursor..target]
+                    } else {
+                        ""
+                    };
                     self.assign_section(section, &targets);
                     cursor = target;
                     i += 1;
@@ -425,12 +433,18 @@ impl<'a> Evaluator<'a> {
         pat: &str,
         targets: &[&TemplateElement],
     ) -> usize {
-        if !pat.is_empty() && let Some(found) = source[cursor..].find(pat) {
+        if !pat.is_empty()
+            && let Some(found) = source[cursor..].find(pat)
+        {
             let abs = cursor + found;
             self.assign_section(&source[cursor..abs], targets);
             abs + pat.len()
         } else {
-            let section = if cursor < source.len() { &source[cursor..] } else { "" };
+            let section = if cursor < source.len() {
+                &source[cursor..]
+            } else {
+                ""
+            };
             self.assign_section(section, targets);
             source.len()
         }
@@ -494,19 +508,20 @@ impl<'a> Evaluator<'a> {
 
     /// Advance `n` characters forward from `byte_cursor` and return the new byte offset.
     fn advance_chars(source: &str, byte_cursor: usize, n: usize) -> usize {
-        source[byte_cursor..]
+        let clamped = byte_cursor.min(source.len());
+        source[clamped..]
             .char_indices()
             .nth(n)
-            .map_or(source.len(), |(offset, _)| byte_cursor + offset)
+            .map_or(source.len(), |(offset, _)| clamped + offset)
     }
 
     /// Retreat `n` characters backward from `byte_cursor` and return the new byte offset.
     fn retreat_chars(source: &str, byte_cursor: usize, n: usize) -> usize {
-        // Collect char boundaries up to byte_cursor, then go back n
-        let boundaries: Vec<usize> = source[..byte_cursor]
-            .char_indices()
-            .map(|(i, _)| i)
-            .collect();
+        if n == 0 {
+            return byte_cursor.min(source.len());
+        }
+        let clamped = byte_cursor.min(source.len());
+        let boundaries: Vec<usize> = source[..clamped].char_indices().map(|(i, _)| i).collect();
         if n >= boundaries.len() {
             0
         } else {
@@ -518,6 +533,10 @@ impl<'a> Evaluator<'a> {
     fn to_position_value(&self, val: &RexxValue) -> RexxResult<i64> {
         let d = self.to_number(val)?;
         let rounded = d.round(0);
+        if d != rounded {
+            return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                .with_detail(format!("'{val}' is not a whole number")));
+        }
         let s = rounded.to_string();
         s.parse::<i64>().map_err(|_| {
             RexxDiagnostic::new(RexxError::InvalidWholeNumber)
