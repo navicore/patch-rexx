@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 mod ast;
+mod builtins;
 mod env;
 mod error;
 mod eval;
