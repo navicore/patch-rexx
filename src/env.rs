@@ -153,6 +153,10 @@ impl Environment {
     /// Pop the current scope (on RETURN from a PROCEDURE).
     /// Writes back any exposed variables to the parent scope.
     pub fn pop_procedure(&mut self) {
+        debug_assert!(
+            self.scopes.len() > 1,
+            "pop_procedure called with no nested scope"
+        );
         if self.scopes.len() > 1 {
             let popped = self.scopes.pop().unwrap();
             let parent = self.scopes.last_mut().unwrap();

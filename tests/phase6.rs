@@ -278,3 +278,35 @@ fn condition_bif_no_trap_returns_empty() {
     // When no condition has fired, CONDITION() returns empty string
     assert_eq!(run_rexx("say '>'condition('C')'<'"), "><");
 }
+
+// ── NOVALUE from function call expression ────────────────────────────
+
+#[test]
+fn novalue_from_function_call() {
+    // NOVALUE should fire for an unset variable used in a function's RETURN expression
+    assert_eq!(
+        run_rexx("signal on novalue; x = foo(); exit; foo: return bar; novalue: say 'TRAPPED'"),
+        "TRAPPED"
+    );
+}
+
+// ── SIGNAL OFF without prior ON (no-op) ──────────────────────────────
+
+#[test]
+fn signal_off_without_on_is_noop() {
+    // SIGNAL OFF for a condition that was never enabled should be a no-op
+    assert_eq!(run_rexx("signal off novalue; say 'OK'"), "OK");
+}
+
+// ── Trap re-enable after auto-disable ────────────────────────────────
+
+#[test]
+fn trap_reenable_after_autodisable() {
+    // After a trap fires and auto-disables, re-enabling it should allow it to fire again
+    assert_eq!(
+        run_rexx(
+            "signal on novalue; x = bad1; exit; novalue: say 'FIRST'; signal on novalue name h2; x = bad2; exit; h2: say 'SECOND'"
+        ),
+        "FIRST\nSECOND"
+    );
+}
