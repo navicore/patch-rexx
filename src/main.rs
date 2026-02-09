@@ -38,7 +38,7 @@ fn main() {
 
     if let Some(expr) = &cli.eval {
         let mut environment = env::Environment::new();
-        if let Err(e) = run_line(expr, &mut environment) {
+        if let Err(e) = run_line(expr, &mut environment, &[]) {
             eprintln!("{e}");
             std::process::exit(1);
         }
@@ -46,7 +46,7 @@ fn main() {
         match std::fs::read_to_string(path) {
             Ok(source) => {
                 let mut environment = env::Environment::new();
-                if let Err(e) = run_line(&source, &mut environment) {
+                if let Err(e) = run_line(&source, &mut environment, &cli.args) {
                     eprintln!("{e}");
                     std::process::exit(1);
                 }
@@ -61,12 +61,20 @@ fn main() {
     }
 }
 
-fn run_line(source: &str, environment: &mut env::Environment) -> error::RexxResult<()> {
+fn run_line(
+    source: &str,
+    environment: &mut env::Environment,
+    args: &[String],
+) -> error::RexxResult<()> {
     let mut lex = lexer::Lexer::new(source);
     let tokens = lex.tokenize()?;
     let mut p = parser::Parser::new(tokens);
     let program = p.parse()?;
     let mut evaluator = eval::Evaluator::new(environment, &program);
+    if !args.is_empty() {
+        let joined = args.join(" ");
+        evaluator.set_main_args(vec![value::RexxValue::new(joined)]);
+    }
     let signal = evaluator.exec()?;
     match signal {
         eval::ExecSignal::Normal | eval::ExecSignal::Exit(_) | eval::ExecSignal::Return(_) => {
@@ -107,7 +115,7 @@ fn run_repl() {
                 if trimmed.eq_ignore_ascii_case("exit") {
                     break;
                 }
-                if let Err(e) = run_line(trimmed, &mut environment) {
+                if let Err(e) = run_line(trimmed, &mut environment, &[]) {
                     eprintln!("{e}");
                 }
             }

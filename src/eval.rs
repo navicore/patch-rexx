@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use crate::ast::{
-    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, ParseTemplate,
-    Program, TailElement, TemplateElement, UnaryOp,
+    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, ParseSource,
+    ParseTemplate, Program, TailElement, TemplateElement, UnaryOp,
 };
 use crate::env::Environment;
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
@@ -174,7 +174,20 @@ impl<'a> Evaluator<'a> {
                 }
                 Ok(ExecSignal::Normal)
             }
-            ClauseKind::Arg(template) => Ok(self.exec_arg(template)),
+            ClauseKind::Arg(template) => self.exec_arg(template),
+            ClauseKind::Parse {
+                upper,
+                source,
+                template,
+            } => self.exec_parse(*upper, source, template),
+            ClauseKind::Pull(template_opt) => {
+                let raw = self.read_stdin_line()?;
+                let text = raw.to_uppercase();
+                if let Some(template) = template_opt {
+                    self.apply_template(&text, template)?;
+                }
+                Ok(ExecSignal::Normal)
+            }
             _ => {
                 // Other clause types not yet implemented
                 Ok(ExecSignal::Normal)
@@ -242,25 +255,296 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    fn exec_arg(&mut self, template: &ParseTemplate) -> ExecSignal {
-        let args = self.arg_stack.last().cloned().unwrap_or_default();
-        let mut arg_idx = 0;
-        for element in &template.elements {
-            match element {
-                TemplateElement::Variable(name) => {
-                    if let Some(v) = args.get(arg_idx) {
-                        self.env
-                            .set(name, RexxValue::new(v.as_str().to_uppercase()));
-                    }
-                    // Missing args: leave variable unset (returns its own name)
+    /// ARG is shorthand for PARSE UPPER ARG.
+    fn exec_arg(&mut self, template: &ParseTemplate) -> RexxResult<ExecSignal> {
+        self.exec_parse(true, &ParseSource::Arg, template)
+    }
+
+    /// Public setter so main.rs can push CLI arguments for the main program.
+    pub fn set_main_args(&mut self, args: Vec<RexxValue>) {
+        self.arg_stack.push(args);
+    }
+
+    // ── PARSE template engine ──────────────────────────────────────
+
+    /// Execute a PARSE instruction: resolve source, split at commas, apply templates.
+    fn exec_parse(
+        &mut self,
+        upper: bool,
+        source: &ParseSource,
+        template: &ParseTemplate,
+    ) -> RexxResult<ExecSignal> {
+        let sub_templates = Self::split_template_at_commas(template);
+
+        if let ParseSource::Arg = source {
+            let args = self.arg_stack.last().cloned().unwrap_or_default();
+            for (i, sub_t) in sub_templates.iter().enumerate() {
+                let raw = args
+                    .get(i)
+                    .map(|v| v.as_str().to_string())
+                    .unwrap_or_default();
+                let text = if upper { raw.to_uppercase() } else { raw };
+                self.apply_template(&text, sub_t)?;
+            }
+        } else {
+            let raw = match source {
+                ParseSource::Var(name) => self.env.get(name).as_str().to_string(),
+                ParseSource::Value(expr) => self.eval_expr(expr)?.as_str().to_string(),
+                ParseSource::Pull | ParseSource::LineIn => self.read_stdin_line()?,
+                ParseSource::Source => "UNIX COMMAND patch-rexx".to_string(),
+                ParseSource::Version => {
+                    format!("REXX-patch-rexx {} 8 Feb 2026", env!("CARGO_PKG_VERSION"))
                 }
-                TemplateElement::Comma => {
-                    arg_idx += 1;
-                }
-                _ => {} // ignore patterns/positions — Phase 4
+                ParseSource::Arg => unreachable!(),
+            };
+            let text = if upper { raw.to_uppercase() } else { raw };
+            for (i, sub_t) in sub_templates.iter().enumerate() {
+                let s = if i == 0 { &text } else { "" };
+                self.apply_template(s, sub_t)?;
             }
         }
-        ExecSignal::Normal
+
+        Ok(ExecSignal::Normal)
+    }
+
+    /// Apply a single PARSE template to a source string.
+    fn apply_template(&mut self, source: &str, template: &ParseTemplate) -> RexxResult<()> {
+        let elements = &template.elements;
+        let len = elements.len();
+        let mut cursor: usize = 0;
+        let mut i: usize = 0;
+
+        while i < len {
+            // Collect consecutive Variable/Dot targets.
+            let mut targets: Vec<&TemplateElement> = Vec::new();
+            while i < len {
+                match &elements[i] {
+                    e @ (TemplateElement::Variable(_) | TemplateElement::Dot) => {
+                        targets.push(e);
+                        i += 1;
+                    }
+                    _ => break,
+                }
+            }
+
+            // Determine the section based on next element.
+            if i >= len {
+                // End of template: section = cursor..end
+                let section = if cursor < source.len() {
+                    &source[cursor..]
+                } else {
+                    ""
+                };
+                self.assign_section(section, &targets);
+                break;
+            }
+
+            match &elements[i] {
+                TemplateElement::Literal(pat) => {
+                    cursor = self.match_pattern(source, cursor, pat, &targets);
+                    i += 1;
+                }
+                TemplateElement::AbsolutePos(expr) => {
+                    let pos_val = self.eval_expr(expr)?;
+                    let pos = self.to_position_value(&pos_val)?;
+                    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                    let char_pos = if pos > 0 { (pos - 1) as usize } else { 0 };
+                    let target = Self::char_pos_to_byte_offset(source, char_pos);
+                    let section = if target > cursor {
+                        &source[cursor..target]
+                    } else {
+                        ""
+                    };
+                    self.assign_section(section, &targets);
+                    cursor = target;
+                    i += 1;
+                }
+                TemplateElement::RelativePos(offset) => {
+                    #[allow(clippy::cast_sign_loss)]
+                    let target = if *offset >= 0 {
+                        Self::advance_chars(source, cursor, *offset as usize)
+                    } else {
+                        Self::retreat_chars(source, cursor, offset.unsigned_abs() as usize)
+                    };
+                    let section = if target > cursor {
+                        &source[cursor..target]
+                    } else {
+                        ""
+                    };
+                    self.assign_section(section, &targets);
+                    cursor = target;
+                    i += 1;
+                }
+                TemplateElement::VariablePattern(name) => {
+                    let pat = self.env.get(name).as_str().to_string();
+                    cursor = self.match_pattern(source, cursor, &pat, &targets);
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Assign a section of text to target variables using REXX word-parsing rules.
+    /// Per ANSI REXX, "blanks" include space (0x20) and horizontal tab (0x09).
+    fn assign_section(&mut self, section: &str, targets: &[&TemplateElement]) {
+        match targets.len() {
+            0 => {} // no targets — just repositioning cursor
+            1 => {
+                // Single target gets entire section verbatim
+                self.assign_target(targets[0], section);
+            }
+            _ => {
+                // Multiple targets: word-parse
+                let mut remaining = section;
+                for (j, target) in targets.iter().enumerate() {
+                    if j == targets.len() - 1 {
+                        // Last target: strip leading blanks, take rest
+                        let trimmed = remaining.trim_start_matches([' ', '\t']);
+                        self.assign_target(target, trimmed);
+                    } else {
+                        // Non-last: strip leading blanks, take one word
+                        let trimmed = remaining.trim_start_matches([' ', '\t']);
+                        if let Some(blank_pos) = trimmed.find([' ', '\t']) {
+                            let word = &trimmed[..blank_pos];
+                            self.assign_target(target, word);
+                            remaining = &trimmed[blank_pos..];
+                        } else {
+                            // No more words
+                            self.assign_target(target, trimmed);
+                            remaining = "";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Search for a literal pattern in source from cursor. Assigns the section
+    /// before the match (or the rest if not found) to targets. Returns new cursor.
+    /// Empty patterns are treated as not found per REXX semantics.
+    fn match_pattern(
+        &mut self,
+        source: &str,
+        cursor: usize,
+        pat: &str,
+        targets: &[&TemplateElement],
+    ) -> usize {
+        if !pat.is_empty()
+            && let Some(found) = source[cursor..].find(pat)
+        {
+            let abs = cursor + found;
+            self.assign_section(&source[cursor..abs], targets);
+            abs + pat.len()
+        } else {
+            let section = if cursor < source.len() {
+                &source[cursor..]
+            } else {
+                ""
+            };
+            self.assign_section(section, targets);
+            source.len()
+        }
+    }
+
+    /// Assign a value to a single template target (Variable or Dot).
+    fn assign_target(&mut self, target: &TemplateElement, value: &str) {
+        if let TemplateElement::Variable(name) = target {
+            self.env.set(name, RexxValue::new(value));
+        }
+        // Dot and other elements are discarded
+    }
+
+    /// Split a template at Comma elements into sub-templates.
+    /// Fast path: if no commas, return the template as-is without cloning.
+    fn split_template_at_commas(template: &ParseTemplate) -> Vec<ParseTemplate> {
+        if !template
+            .elements
+            .iter()
+            .any(|e| matches!(e, TemplateElement::Comma))
+        {
+            return vec![template.clone()];
+        }
+        let mut result = Vec::new();
+        let mut current = Vec::new();
+        for elem in &template.elements {
+            if matches!(elem, TemplateElement::Comma) {
+                result.push(ParseTemplate {
+                    elements: std::mem::take(&mut current),
+                });
+            } else {
+                current.push(elem.clone());
+            }
+        }
+        result.push(ParseTemplate { elements: current });
+        result
+    }
+
+    /// Read one line from stdin, stripping the trailing newline.
+    #[allow(clippy::unused_self)]
+    fn read_stdin_line(&self) -> RexxResult<String> {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).map_err(|e| {
+            RexxDiagnostic::new(RexxError::SystemFailure)
+                .with_detail(format!("failed to read stdin: {e}"))
+        })?;
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+        Ok(line)
+    }
+
+    /// Convert a 0-based character position to a byte offset in a UTF-8 string.
+    /// Clamps to `source.len()` if the character position exceeds the string length.
+    fn char_pos_to_byte_offset(source: &str, char_pos: usize) -> usize {
+        source
+            .char_indices()
+            .nth(char_pos)
+            .map_or(source.len(), |(byte_offset, _)| byte_offset)
+    }
+
+    /// Advance `n` characters forward from `byte_cursor` and return the new byte offset.
+    fn advance_chars(source: &str, byte_cursor: usize, n: usize) -> usize {
+        let clamped = byte_cursor.min(source.len());
+        source[clamped..]
+            .char_indices()
+            .nth(n)
+            .map_or(source.len(), |(offset, _)| clamped + offset)
+    }
+
+    /// Retreat `n` characters backward from `byte_cursor` and return the new byte offset.
+    fn retreat_chars(source: &str, byte_cursor: usize, n: usize) -> usize {
+        if n == 0 {
+            return byte_cursor.min(source.len());
+        }
+        let clamped = byte_cursor.min(source.len());
+        source[..clamped]
+            .char_indices()
+            .map(|(i, _)| i)
+            .rev()
+            .nth(n - 1)
+            .unwrap_or(0)
+    }
+
+    /// Convert a value to a position (integer) for PARSE template positioning.
+    fn to_position_value(&self, val: &RexxValue) -> RexxResult<i64> {
+        let d = self.to_number(val)?;
+        let rounded = d.round(0);
+        if d != rounded {
+            return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                .with_detail(format!("'{val}' is not a whole number")));
+        }
+        let s = rounded.to_string();
+        s.parse::<i64>().map_err(|_| {
+            RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                .with_detail(format!("'{val}' is not a valid position"))
+        })
     }
 
     fn exec_if(

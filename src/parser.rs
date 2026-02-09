@@ -5,8 +5,8 @@
 //! recognised by context at the start of a clause.
 
 use crate::ast::{
-    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, ParseTemplate,
-    Program, TemplateElement, UnaryOp,
+    AssignTarget, BinOp, Clause, ClauseKind, ControlledLoop, DoBlock, DoKind, Expr, ParseSource,
+    ParseTemplate, Program, TemplateElement, UnaryOp,
 };
 use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
 use crate::lexer::{Token, TokenKind};
@@ -23,6 +23,9 @@ pub struct Parser {
     /// Depth counter: >0 while parsing IF THEN/ELSE clauses so that
     /// ELSE is not consumed by implicit concatenation.
     if_depth: usize,
+    /// Depth counter: >0 while parsing PARSE VALUE expr WITH so that
+    /// WITH is not consumed by implicit concatenation.
+    parse_value_depth: usize,
 }
 
 impl Parser {
@@ -33,6 +36,7 @@ impl Parser {
             do_header_depth: 0,
             condition_depth: 0,
             if_depth: 0,
+            parse_value_depth: 0,
         }
     }
 
@@ -135,6 +139,15 @@ impl Parser {
     fn is_else_keyword(&self) -> bool {
         if let TokenKind::Symbol(name) = self.peek_kind() {
             Self::check_keyword(name, "ELSE")
+        } else {
+            false
+        }
+    }
+
+    /// Check if the current token is WITH (stops implicit concat in PARSE VALUE).
+    fn is_with_keyword(&self) -> bool {
+        if let TokenKind::Symbol(name) = self.peek_kind() {
+            Self::check_keyword(name, "WITH")
         } else {
             false
         }
@@ -246,9 +259,19 @@ impl Parser {
                 return Ok(self.parse_procedure());
             }
 
+            // PARSE instruction
+            if Self::check_keyword(name, "PARSE") {
+                return self.parse_parse();
+            }
+
+            // PULL instruction
+            if Self::check_keyword(name, "PULL") {
+                return self.parse_pull();
+            }
+
             // ARG instruction
             if Self::check_keyword(name, "ARG") {
-                return Ok(self.parse_arg());
+                return self.parse_arg();
             }
 
             // DROP instruction
@@ -787,36 +810,196 @@ impl Parser {
         }
     }
 
-    /// Parse: ARG [var [, var]...]
-    fn parse_arg(&mut self) -> Clause {
-        let loc = self.loc();
-        self.advance(); // consume ARG
-
-        // Phase 3: parse one variable per argument position, commas advance
-        // to the next argument. Additional space-separated symbols within a
-        // position are skipped (full word-split template parsing is Phase 4).
+    /// Parse a PARSE template: sequence of variables, dots, literal patterns,
+    /// positional patterns, variable patterns, and commas.
+    fn parse_template(&mut self) -> RexxResult<ParseTemplate> {
         let mut elements = Vec::new();
-        let mut have_var = false; // true once we've captured a variable for this position
         while !self.is_terminator() {
-            if matches!(self.peek_kind(), TokenKind::Comma) {
-                self.advance();
-                elements.push(TemplateElement::Comma);
-                have_var = false; // reset for next argument position
-            } else if let TokenKind::Symbol(s) = self.peek_kind() {
-                if !have_var {
-                    elements.push(TemplateElement::Variable(s.to_uppercase()));
-                    have_var = true;
+            match self.peek_kind().clone() {
+                TokenKind::Symbol(name) => {
+                    elements.push(TemplateElement::Variable(name.to_uppercase()));
+                    self.advance();
                 }
-                self.advance(); // consume (and skip if already have a var)
-            } else {
-                break;
+                TokenKind::Dot => {
+                    elements.push(TemplateElement::Dot);
+                    self.advance();
+                }
+                TokenKind::StringLit(s) => {
+                    elements.push(TemplateElement::Literal(s));
+                    self.advance();
+                }
+                TokenKind::Number(n) => {
+                    elements.push(TemplateElement::AbsolutePos(Expr::Number(n)));
+                    self.advance();
+                }
+                TokenKind::Plus => {
+                    self.advance(); // consume +
+                    if let TokenKind::Number(n) = self.peek_kind().clone() {
+                        self.advance();
+                        let val: i32 = n.parse().map_err(|_| {
+                            RexxDiagnostic::new(RexxError::InvalidTemplate)
+                                .at(self.loc())
+                                .with_detail(format!("invalid relative position '+{n}'"))
+                        })?;
+                        elements.push(TemplateElement::RelativePos(val));
+                    } else {
+                        return Err(RexxDiagnostic::new(RexxError::InvalidTemplate)
+                            .at(self.loc())
+                            .with_detail("expected number after '+' in template"));
+                    }
+                }
+                TokenKind::Minus => {
+                    self.advance(); // consume -
+                    if let TokenKind::Number(n) = self.peek_kind().clone() {
+                        self.advance();
+                        let val: i32 = n.parse().map_err(|_| {
+                            RexxDiagnostic::new(RexxError::InvalidTemplate)
+                                .at(self.loc())
+                                .with_detail(format!("invalid relative position '-{n}'"))
+                        })?;
+                        elements.push(TemplateElement::RelativePos(-val));
+                    } else {
+                        return Err(RexxDiagnostic::new(RexxError::InvalidTemplate)
+                            .at(self.loc())
+                            .with_detail("expected number after '-' in template"));
+                    }
+                }
+                TokenKind::LeftParen => {
+                    self.advance(); // consume (
+                    if let TokenKind::Symbol(name) = self.peek_kind().clone() {
+                        let var_name = name.to_uppercase();
+                        self.advance(); // consume symbol
+                        let err_loc = self.loc();
+                        self.expect(&TokenKind::RightParen).map_err(|_| {
+                            RexxDiagnostic::new(RexxError::InvalidTemplate)
+                                .at(err_loc)
+                                .with_detail("expected ')' after variable pattern name")
+                        })?;
+                        elements.push(TemplateElement::VariablePattern(var_name));
+                    } else {
+                        return Err(RexxDiagnostic::new(RexxError::InvalidTemplate)
+                            .at(self.loc())
+                            .with_detail("expected symbol inside '(' ')' in template"));
+                    }
+                }
+                TokenKind::Comma => {
+                    elements.push(TemplateElement::Comma);
+                    self.advance();
+                }
+                _ => break,
             }
         }
+        Ok(ParseTemplate { elements })
+    }
 
-        Clause {
-            kind: ClauseKind::Arg(ParseTemplate { elements }),
+    /// Parse: PARSE [UPPER] source template
+    fn parse_parse(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume PARSE
+
+        // Check for UPPER
+        let upper = if self.is_keyword("UPPER") {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
+        // Dispatch on source keyword
+        let source = if self.is_keyword("ARG") {
+            self.advance();
+            ParseSource::Arg
+        } else if self.is_keyword("PULL") {
+            self.advance();
+            ParseSource::Pull
+        } else if self.is_keyword("SOURCE") {
+            self.advance();
+            ParseSource::Source
+        } else if self.is_keyword("VERSION") {
+            self.advance();
+            ParseSource::Version
+        } else if self.is_keyword("LINEIN") {
+            self.advance();
+            ParseSource::LineIn
+        } else if self.is_keyword("VAR") {
+            self.advance();
+            if let TokenKind::Symbol(name) = self.peek_kind().clone() {
+                let var_name = name.to_uppercase();
+                self.advance();
+                ParseSource::Var(var_name)
+            } else {
+                return Err(RexxDiagnostic::new(RexxError::ExpectedSymbol)
+                    .at(self.loc())
+                    .with_detail("expected variable name after PARSE VAR"));
+            }
+        } else if self.is_keyword("VALUE") {
+            self.advance();
+            self.parse_value_depth += 1;
+            let expr = self.parse_expression();
+            self.parse_value_depth -= 1;
+            let expr = expr?;
+            // Expect WITH keyword
+            if !self.is_with_keyword() {
+                return Err(RexxDiagnostic::new(RexxError::InvalidSubKeyword)
+                    .at(self.loc())
+                    .with_detail("expected WITH after PARSE VALUE expression"));
+            }
+            self.advance(); // consume WITH
+            ParseSource::Value(expr)
+        } else {
+            return Err(RexxDiagnostic::new(RexxError::InvalidSubKeyword)
+                .at(self.loc())
+                .with_detail(
+                    "expected ARG, PULL, SOURCE, VERSION, LINEIN, VAR, or VALUE after PARSE",
+                ));
+        };
+
+        let template = if self.is_terminator() {
+            ParseTemplate { elements: vec![] }
+        } else {
+            self.parse_template()?
+        };
+
+        Ok(Clause {
+            kind: ClauseKind::Parse {
+                upper,
+                source,
+                template,
+            },
             loc,
-        }
+        })
+    }
+
+    /// Parse: PULL [template]
+    fn parse_pull(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume PULL
+
+        let template = if self.is_terminator() {
+            None
+        } else {
+            Some(self.parse_template()?)
+        };
+
+        Ok(Clause {
+            kind: ClauseKind::Pull(template),
+            loc,
+        })
+    }
+
+    /// Parse: ARG [template]
+    fn parse_arg(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume ARG
+        let template = if self.is_terminator() {
+            ParseTemplate { elements: vec![] }
+        } else {
+            self.parse_template()?
+        };
+        Ok(Clause {
+            kind: ClauseKind::Arg(template),
+            loc,
+        })
     }
 
     /// Parse: DROP name [name...]
@@ -957,6 +1140,12 @@ impl Parser {
             // When inside an IF, suppress implicit concatenation for ELSE
             // so it can be consumed by the IF parser.
             if self.if_depth > 0 && self.is_else_keyword() {
+                break;
+            }
+
+            // When inside PARSE VALUE, suppress implicit concatenation for WITH
+            // so it can be consumed by the PARSE parser.
+            if self.parse_value_depth > 0 && self.is_with_keyword() {
                 break;
             }
 
