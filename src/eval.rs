@@ -997,23 +997,45 @@ impl<'a> Evaluator<'a> {
             }
             Expr::Compound { stem, tail } => {
                 let resolved = self.resolve_tail(tail);
+                if !self.env.is_compound_set(stem, &resolved)
+                    && let Some(label) = self.traps.get(&Condition::NoValue).cloned()
+                {
+                    let compound_name = format!("{}.{}", stem.to_uppercase(), resolved);
+                    self.env.set_condition_info(crate::env::ConditionInfoData {
+                        condition: "NOVALUE".to_string(),
+                        description: compound_name,
+                        instruction: "SIGNAL".to_string(),
+                        status: "ON".to_string(),
+                    });
+                    self.traps.remove(&Condition::NoValue);
+                    self.pending_signal = Some(label);
+                }
                 Ok(self.env.get_compound(stem, &resolved))
             }
             Expr::Paren(inner) => self.eval_expr(inner),
             Expr::UnaryOp { op, operand } => {
                 let val = self.eval_expr(operand)?;
+                if self.pending_signal.is_some() {
+                    return Ok(val);
+                }
                 self.eval_unary(*op, &val)
             }
             Expr::BinOp { left, op, right } => {
                 let lval = self.eval_expr(left)?;
+                if self.pending_signal.is_some() {
+                    return Ok(lval);
+                }
                 let rval = self.eval_expr(right)?;
+                if self.pending_signal.is_some() {
+                    return Ok(rval);
+                }
                 self.eval_binop(*op, &lval, &rval)
             }
             Expr::FunctionCall { name, args } => {
                 let mut evaluated_args = Vec::with_capacity(args.len());
                 for arg_expr in args {
                     evaluated_args.push(self.eval_expr(arg_expr)?);
-                    if self.pending_exit.is_pending() {
+                    if self.pending_exit.is_pending() || self.pending_signal.is_some() {
                         return Ok(RexxValue::new(""));
                     }
                 }

@@ -217,3 +217,64 @@ fn novalue_trap_fires_once() {
         "BAD1\nBAD2"
     );
 }
+
+// ── NOVALUE on compound variables ──────────────────────────────────
+
+#[test]
+fn novalue_compound_variable() {
+    assert_eq!(
+        run_rexx("signal on novalue; x = arr.1; exit; novalue: say 'TRAPPED'"),
+        "TRAPPED"
+    );
+}
+
+#[test]
+fn novalue_compound_description() {
+    assert_eq!(
+        run_rexx("signal on novalue; x = arr.1; exit; novalue: say condition('D')"),
+        "ARR.1"
+    );
+}
+
+#[test]
+fn novalue_set_variable_does_not_fire() {
+    // If a variable is explicitly set, accessing it should NOT fire NOVALUE
+    assert_eq!(run_rexx("signal on novalue; x = 'hello'; say x"), "hello");
+}
+
+// ── NOVALUE fires before secondary errors ──────────────────────────
+
+#[test]
+fn novalue_fires_before_arithmetic_error() {
+    // NOVALUE should fire immediately — not after attempting arithmetic on the name
+    assert_eq!(
+        run_rexx("signal on novalue; x = unsetvar + 1; exit; novalue: say 'TRAPPED'"),
+        "TRAPPED"
+    );
+}
+
+// ── SIGNAL VALUE to non-existent label ─────────────────────────────
+
+#[test]
+fn signal_value_nonexistent_label_error_16() {
+    let err = run_rexx_fail("signal value 'BADLABEL'");
+    assert!(err.contains("16"), "expected Error 16, got: {err}");
+}
+
+// ── SIGNAL from within SELECT/WHEN ─────────────────────────────────
+
+#[test]
+fn signal_from_select_when() {
+    assert_eq!(
+        run_rexx("x = 1; select; when x = 1 then signal done; otherwise nop; end; done: say 'OK'"),
+        "OK"
+    );
+}
+
+// ── CONDITION() with no active trap ────────────────────────────────
+
+#[test]
+fn condition_bif_no_trap_returns_empty() {
+    // When no condition has fired, CONDITION() returns empty string
+    assert_eq!(run_rexx("say '>'condition('C')'<'"), "><");
+}

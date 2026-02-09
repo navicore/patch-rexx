@@ -176,12 +176,25 @@ impl Environment {
         self.condition_info = Some(info);
     }
 
-    /// Check if a variable has been explicitly set (for SIGNAL ON NOVALUE).
+    /// Check if a simple variable has been explicitly set (for SIGNAL ON NOVALUE).
     pub fn is_set(&self, name: &str) -> bool {
         let upper = name.to_uppercase();
         self.scopes
             .last()
             .is_some_and(|s| s.vars.contains_key(&upper))
+    }
+
+    /// Check if a compound variable has been explicitly set (for SIGNAL ON NOVALUE).
+    /// Returns true if the specific tail has a value OR the stem has a default.
+    pub fn is_compound_set(&self, stem: &str, resolved_tail: &str) -> bool {
+        let stem_upper = format!("{}.", stem.to_uppercase());
+        let tail_upper = resolved_tail.to_uppercase();
+        let scope = self.scopes.last().expect("environment has no scopes");
+        if let Some(stem_var) = scope.stems.get(&stem_upper) {
+            stem_var.entries.contains_key(&tail_upper) || stem_var.default.is_some()
+        } else {
+            false
+        }
     }
 
     fn current_scope_mut(&mut self) -> &mut Scope {
