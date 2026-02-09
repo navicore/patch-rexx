@@ -181,7 +181,7 @@ impl<'a> Evaluator<'a> {
                 template,
             } => self.exec_parse(*upper, source, template),
             ClauseKind::Pull(template_opt) => {
-                let raw = self.read_stdin_line();
+                let raw = self.read_stdin_line()?;
                 let text = raw.to_uppercase();
                 if let Some(template) = template_opt {
                     self.apply_template(&text, template)?;
@@ -290,7 +290,7 @@ impl<'a> Evaluator<'a> {
             let raw = match source {
                 ParseSource::Var(name) => self.env.get(name).as_str().to_string(),
                 ParseSource::Value(expr) => self.eval_expr(expr)?.as_str().to_string(),
-                ParseSource::Pull | ParseSource::LineIn => self.read_stdin_line(),
+                ParseSource::Pull | ParseSource::LineIn => self.read_stdin_line()?,
                 ParseSource::Source => "UNIX COMMAND patch-rexx".to_string(),
                 ParseSource::Version => {
                     format!("REXX-patch-rexx {} 8 Feb 2026", env!("CARGO_PKG_VERSION"))
@@ -485,16 +485,19 @@ impl<'a> Evaluator<'a> {
 
     /// Read one line from stdin, stripping the trailing newline.
     #[allow(clippy::unused_self)]
-    fn read_stdin_line(&self) -> String {
+    fn read_stdin_line(&self) -> RexxResult<String> {
         let mut line = String::new();
-        let _ = std::io::stdin().read_line(&mut line);
+        std::io::stdin().read_line(&mut line).map_err(|e| {
+            RexxDiagnostic::new(RexxError::SystemFailure)
+                .with_detail(format!("failed to read stdin: {e}"))
+        })?;
         if line.ends_with('\n') {
             line.pop();
             if line.ends_with('\r') {
                 line.pop();
             }
         }
-        line
+        Ok(line)
     }
 
     /// Convert a 0-based character position to a byte offset in a UTF-8 string.
@@ -521,12 +524,12 @@ impl<'a> Evaluator<'a> {
             return byte_cursor.min(source.len());
         }
         let clamped = byte_cursor.min(source.len());
-        let boundaries: Vec<usize> = source[..clamped].char_indices().map(|(i, _)| i).collect();
-        if n >= boundaries.len() {
-            0
-        } else {
-            boundaries[boundaries.len() - n]
-        }
+        source[..clamped]
+            .char_indices()
+            .map(|(i, _)| i)
+            .rev()
+            .nth(n - 1)
+            .unwrap_or(0)
     }
 
     /// Convert a value to a position (integer) for PARSE template positioning.

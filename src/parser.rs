@@ -935,8 +935,9 @@ impl Parser {
         } else if self.is_keyword("VALUE") {
             self.advance();
             self.parse_value_depth += 1;
-            let expr = self.parse_expression()?;
+            let expr = self.parse_expression();
             self.parse_value_depth -= 1;
+            let expr = expr?;
             // Expect WITH keyword
             if !self.is_with_keyword() {
                 return Err(RexxDiagnostic::new(RexxError::InvalidSubKeyword)
