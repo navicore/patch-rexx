@@ -260,6 +260,15 @@ fn interpret_bare_keyword() {
 }
 
 #[test]
+fn interpret_signal_to_trailing_label() {
+    // Label at end of interpreted code — signal lands past last clause, completes normally
+    assert_eq!(
+        run_rexx("interpret 'signal done; done:'; say 'after'"),
+        "after"
+    );
+}
+
+#[test]
 fn interpret_assignment_only() {
     // INTERPRET that only does assignments, no output
     assert_eq!(run_rexx("interpret 'a = 1; b = 2'; say a + b"), "3");

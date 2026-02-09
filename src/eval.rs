@@ -13,7 +13,7 @@ use crate::ast::{
     ParseSource, ParseTemplate, Program, SignalAction, TailElement, TemplateElement, UnaryOp,
 };
 use crate::env::Environment;
-use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
+use crate::error::{RexxDiagnostic, RexxError, RexxResult};
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::{NumericSettings, RexxValue};
@@ -282,7 +282,6 @@ impl<'a> Evaluator<'a> {
         // Depth guard
         if self.interpret_depth >= MAX_INTERPRET_DEPTH {
             return Err(RexxDiagnostic::new(RexxError::ResourceExhausted)
-                .at(SourceLoc::new(0, 0))
                 .with_detail("INTERPRET recursion depth limit exceeded"));
         }
 
