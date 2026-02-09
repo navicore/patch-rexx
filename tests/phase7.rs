@@ -181,10 +181,8 @@ fn interpret_nested() {
 
 #[test]
 fn interpret_depth_limit() {
-    // Excessive recursion should trigger Error 5 (ResourceExhausted)
-    let stderr = run_rexx_fail(
-        "interpret 'interpret \"interpret \" || copies(\"interpret \", 200) || \"say 1\"'",
-    );
+    // Recursive INTERPRET that actually executes to depth limit (Error 5)
+    let stderr = run_rexx_fail("code = 'interpret code'; interpret code");
     assert!(
         stderr.contains("Error 5"),
         "expected Error 5 (ResourceExhausted), got: {stderr}"
@@ -237,6 +235,19 @@ fn interpret_can_set_traps() {
     assert_eq!(
         run_rexx("interpret 'signal on novalue'; x = unsetvar + 1; novalue: say 'TRAPPED'"),
         "TRAPPED"
+    );
+}
+
+// ── Named DO loop interaction ──────────────────────────────────────
+
+#[test]
+fn interpret_leave_named_do() {
+    // LEAVE targeting a named DO from inside INTERPRET
+    assert_eq!(
+        run_rexx(
+            "r = ''; do i = 1 to 5; if i = 3 then interpret 'leave i'; r = r || i; end; say r"
+        ),
+        "12"
     );
 }
 
