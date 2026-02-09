@@ -341,79 +341,35 @@ impl<'a> Evaluator<'a> {
 
             match &elements[i] {
                 TemplateElement::Literal(pat) => {
-                    if let Some(found) = source[cursor..].find(pat.as_str()) {
-                        let abs = cursor + found;
-                        let section = &source[cursor..abs];
-                        self.assign_section(section, &targets);
-                        cursor = abs + pat.len();
-                    } else {
-                        // Pattern not found: section = cursor..end
-                        let section = if cursor < source.len() {
-                            &source[cursor..]
-                        } else {
-                            ""
-                        };
-                        self.assign_section(section, &targets);
-                        cursor = source.len();
-                    }
+                    cursor = self.match_pattern(source, cursor, pat, &targets);
                     i += 1;
                 }
                 TemplateElement::AbsolutePos(expr) => {
                     let pos_val = self.eval_expr(expr)?;
                     let pos = self.to_position_value(&pos_val)?;
-                    // REXX absolute positions are 1-based character positions
                     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
                     let char_pos = if pos > 0 { (pos - 1) as usize } else { 0 };
                     let target = Self::char_pos_to_byte_offset(source, char_pos);
-                    let section = if target > cursor {
-                        &source[cursor..target]
-                    } else {
-                        ""
-                    };
+                    let section = if target > cursor { &source[cursor..target] } else { "" };
                     self.assign_section(section, &targets);
                     cursor = target;
                     i += 1;
                 }
                 TemplateElement::RelativePos(offset) => {
-                    // Relative positions advance/retreat by characters, not bytes
                     #[allow(clippy::cast_sign_loss)]
                     let target = if *offset >= 0 {
                         Self::advance_chars(source, cursor, *offset as usize)
                     } else {
                         Self::retreat_chars(source, cursor, (-*offset) as usize)
                     };
-                    let section = if target > cursor {
-                        &source[cursor..target]
-                    } else {
-                        ""
-                    };
+                    let section = if target > cursor { &source[cursor..target] } else { "" };
                     self.assign_section(section, &targets);
                     cursor = target;
                     i += 1;
                 }
                 TemplateElement::VariablePattern(name) => {
                     let pat = self.env.get(name).as_str().to_string();
-                    // Empty pattern is treated as not found per REXX semantics
-                    if !pat.is_empty()
-                        && let Some(found) = source[cursor..].find(pat.as_str())
-                    {
-                        let abs = cursor + found;
-                        let section = &source[cursor..abs];
-                        self.assign_section(section, &targets);
-                        cursor = abs + pat.len();
-                    } else {
-                        let section = if cursor < source.len() {
-                            &source[cursor..]
-                        } else {
-                            ""
-                        };
-                        self.assign_section(section, &targets);
-                        cursor = source.len();
-                    }
-                    i += 1;
-                }
-                TemplateElement::Comma => {
-                    // Should not appear here (split_template_at_commas removes them)
+                    cursor = self.match_pattern(source, cursor, &pat, &targets);
                     i += 1;
                 }
                 _ => {
@@ -456,6 +412,27 @@ impl<'a> Evaluator<'a> {
                     }
                 }
             }
+        }
+    }
+
+    /// Search for a literal pattern in source from cursor. Assigns the section
+    /// before the match (or the rest if not found) to targets. Returns new cursor.
+    /// Empty patterns are treated as not found per REXX semantics.
+    fn match_pattern(
+        &mut self,
+        source: &str,
+        cursor: usize,
+        pat: &str,
+        targets: &[&TemplateElement],
+    ) -> usize {
+        if !pat.is_empty() && let Some(found) = source[cursor..].find(pat) {
+            let abs = cursor + found;
+            self.assign_section(&source[cursor..abs], targets);
+            abs + pat.len()
+        } else {
+            let section = if cursor < source.len() { &source[cursor..] } else { "" };
+            self.assign_section(section, targets);
+            source.len()
         }
     }
 
