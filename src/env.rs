@@ -8,11 +8,22 @@ use std::collections::HashMap;
 
 use crate::value::RexxValue;
 
+/// Information about the most recently trapped condition, read by `CONDITION()` BIF.
+#[derive(Debug, Clone, Default)]
+pub struct ConditionInfoData {
+    pub condition: String,
+    pub description: String,
+    pub instruction: String,
+    pub status: String,
+}
+
 /// A variable environment (scope).
 #[derive(Debug, Clone)]
 pub struct Environment {
     /// Stack of variable scopes. Last is the current (innermost) scope.
     scopes: Vec<Scope>,
+    /// Most recent condition trap info (for `CONDITION()` BIF).
+    pub condition_info: Option<ConditionInfoData>,
 }
 
 /// A single variable scope.
@@ -40,6 +51,7 @@ impl Environment {
     pub fn new() -> Self {
         Self {
             scopes: vec![Scope::new()],
+            condition_info: None,
         }
     }
 
@@ -141,6 +153,10 @@ impl Environment {
     /// Pop the current scope (on RETURN from a PROCEDURE).
     /// Writes back any exposed variables to the parent scope.
     pub fn pop_procedure(&mut self) {
+        debug_assert!(
+            self.scopes.len() > 1,
+            "pop_procedure called with no nested scope"
+        );
         if self.scopes.len() > 1 {
             let popped = self.scopes.pop().unwrap();
             let parent = self.scopes.last_mut().unwrap();
@@ -159,12 +175,30 @@ impl Environment {
         }
     }
 
-    /// Check if a variable has been explicitly set (for SIGNAL ON NOVALUE).
+    /// Set condition info (called when a trap fires).
+    pub fn set_condition_info(&mut self, info: ConditionInfoData) {
+        self.condition_info = Some(info);
+    }
+
+    /// Check if a simple variable has been explicitly set (for SIGNAL ON NOVALUE).
     pub fn is_set(&self, name: &str) -> bool {
         let upper = name.to_uppercase();
         self.scopes
             .last()
             .is_some_and(|s| s.vars.contains_key(&upper))
+    }
+
+    /// Check if a compound variable has been explicitly set (for SIGNAL ON NOVALUE).
+    /// Returns true if the specific tail has a value OR the stem has a default.
+    pub fn is_compound_set(&self, stem: &str, resolved_tail: &str) -> bool {
+        let stem_upper = format!("{}.", stem.to_uppercase());
+        let tail_upper = resolved_tail.to_uppercase();
+        let scope = self.scopes.last().expect("environment has no scopes");
+        if let Some(stem_var) = scope.stems.get(&stem_upper) {
+            stem_var.entries.contains_key(&tail_upper) || stem_var.default.is_some()
+        } else {
+            false
+        }
     }
 
     fn current_scope_mut(&mut self) -> &mut Scope {

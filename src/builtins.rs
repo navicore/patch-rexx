@@ -4,6 +4,7 @@
 //! word processing, numeric operations, conversions, informational queries,
 //! and date/time.
 
+use crate::env::Environment;
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
 use crate::value::{NumericSettings, RexxValue};
 use bigdecimal::BigDecimal;
@@ -22,6 +23,7 @@ pub fn call_builtin(
     name: &str,
     args: &[RexxValue],
     settings: &NumericSettings,
+    env: &Environment,
 ) -> Option<RexxResult<RexxValue>> {
     let result = match name {
         // String functions
@@ -81,6 +83,9 @@ pub fn call_builtin(
         // Date/Time
         "DATE" => bif_date(args),
         "TIME" => bif_time(args),
+
+        // Condition
+        "CONDITION" => bif_condition(args, env),
 
         _ => return None,
     };
@@ -1616,59 +1621,103 @@ fn days_since_base(year: i32, month: u32, day: u32) -> i64 {
     days_from_epoch0 - 305
 }
 
+// ── Condition BIF ────────────────────────────────────────────────────
+
+fn bif_condition(args: &[RexxValue], env: &Environment) -> RexxResult<RexxValue> {
+    check_args("CONDITION", args, 0, 1)?;
+    let option = if args.is_empty() {
+        "I".to_string()
+    } else {
+        args[0].as_str().to_uppercase()
+    };
+
+    let info = env.condition_info.as_ref();
+
+    let result = match option.as_str() {
+        "C" | "CONDITION" => info.map_or_else(String::new, |i| i.condition.clone()),
+        "D" | "DESCRIPTION" => info.map_or_else(String::new, |i| i.description.clone()),
+        "I" | "INSTRUCTION" => info.map_or_else(String::new, |i| i.instruction.clone()),
+        "S" | "STATUS" => info.map_or_else(String::new, |i| i.status.clone()),
+        _ => {
+            return Err(
+                RexxDiagnostic::new(RexxError::IncorrectCall).with_detail(format!(
+                    "CONDITION: option must be C, D, I, or S; got '{option}'"
+                )),
+            );
+        }
+    };
+    Ok(RexxValue::new(result))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env::Environment;
 
     #[test]
     fn test_length() {
+        let env = Environment::new();
         let result = call_builtin(
             "LENGTH",
             &[RexxValue::new("hello")],
             &NumericSettings::default(),
+            &env,
         );
         assert_eq!(result.unwrap().unwrap().as_str(), "5");
     }
 
     #[test]
     fn test_substr() {
+        let env = Environment::new();
         let result = call_builtin(
             "SUBSTR",
             &[RexxValue::new("hello world"), RexxValue::new("7")],
             &NumericSettings::default(),
+            &env,
         );
         assert_eq!(result.unwrap().unwrap().as_str(), "world");
     }
 
     #[test]
     fn test_words() {
+        let env = Environment::new();
         let result = call_builtin(
             "WORDS",
             &[RexxValue::new("one two three")],
             &NumericSettings::default(),
+            &env,
         );
         assert_eq!(result.unwrap().unwrap().as_str(), "3");
     }
 
     #[test]
     fn test_abs() {
-        let result = call_builtin("ABS", &[RexxValue::new("-42")], &NumericSettings::default());
+        let env = Environment::new();
+        let result = call_builtin(
+            "ABS",
+            &[RexxValue::new("-42")],
+            &NumericSettings::default(),
+            &env,
+        );
         assert_eq!(result.unwrap().unwrap().as_str(), "42");
     }
 
     #[test]
     fn test_not_a_bif() {
+        let env = Environment::new();
         let result = call_builtin(
             "NOTABIF",
             &[RexxValue::new("x")],
             &NumericSettings::default(),
+            &env,
         );
         assert!(result.is_none());
     }
 
     #[test]
     fn test_wrong_arg_count() {
-        let result = call_builtin("LENGTH", &[], &NumericSettings::default());
+        let env = Environment::new();
+        let result = call_builtin("LENGTH", &[], &NumericSettings::default(), &env);
         assert!(result.unwrap().is_err());
     }
 
