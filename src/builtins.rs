@@ -1154,7 +1154,8 @@ fn bif_x2d(args: &[RexxValue]) -> RexxResult<RexxValue> {
         let bits = length * 4;
         if bits < 64 && val >= (1u64 << (bits - 1)) {
             let modulus = 1u128 << bits;
-            let signed = i128::from(val) - i128::try_from(modulus).unwrap_or(i128::MAX);
+            let signed = i128::from(val)
+                - i128::try_from(modulus).expect("modulus fits in i128 when bits < 64");
             Ok(RexxValue::new(signed.to_string()))
         } else {
             Ok(RexxValue::new(val.to_string()))
