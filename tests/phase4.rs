@@ -17,6 +17,21 @@ fn run_rexx(expr: &str) -> String {
         .to_string()
 }
 
+fn run_rexx_fail(expr: &str) -> String {
+    let output = Command::new(env!("CARGO_BIN_EXE_patch-rexx"))
+        .args(["-e", expr])
+        .output()
+        .expect("failed to run patch-rexx");
+    assert!(
+        !output.status.success(),
+        "expected patch-rexx to fail for input '{expr}'"
+    );
+    String::from_utf8(output.stderr)
+        .expect("non-utf8 output")
+        .trim()
+        .to_string()
+}
+
 fn run_rexx_with_stdin(expr: &str, stdin_data: &str) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_patch-rexx"))
         .args(["-e", expr])
@@ -324,5 +339,72 @@ fn parse_upper_value() {
     assert_eq!(
         run_rexx("parse upper value 'Hello World' with a b; say a '|' b"),
         "HELLO | WORLD"
+    );
+}
+
+// ── Tab handling ─────────────────────────────────────────
+
+#[test]
+fn parse_var_tab_as_blank() {
+    // Tabs should be treated as word delimiters
+    assert_eq!(
+        run_rexx("data = 'hello\tworld'; parse var data a b; say a '|' b"),
+        "hello | world"
+    );
+}
+
+// ── Error paths ──────────────────────────────────────────
+
+#[test]
+fn error_parse_invalid_subkeyword() {
+    let stderr = run_rexx_fail("parse upper bogus x");
+    assert!(
+        stderr.contains("Error 25"),
+        "expected Error 25, got: {stderr}"
+    );
+}
+
+#[test]
+fn error_parse_value_missing_with() {
+    let stderr = run_rexx_fail("parse value 'hello' x");
+    assert!(
+        stderr.contains("Error 25"),
+        "expected Error 25, got: {stderr}"
+    );
+}
+
+#[test]
+fn error_parse_var_missing_name() {
+    let stderr = run_rexx_fail("parse var 123 x");
+    assert!(
+        stderr.contains("Error 20"),
+        "expected Error 20, got: {stderr}"
+    );
+}
+
+#[test]
+fn error_template_plus_without_number() {
+    let stderr = run_rexx_fail("data = 'test'; parse var data a + b");
+    assert!(
+        stderr.contains("Error 38"),
+        "expected Error 38, got: {stderr}"
+    );
+}
+
+#[test]
+fn error_template_minus_without_number() {
+    let stderr = run_rexx_fail("data = 'test'; parse var data a - b");
+    assert!(
+        stderr.contains("Error 38"),
+        "expected Error 38, got: {stderr}"
+    );
+}
+
+#[test]
+fn error_template_paren_missing_close() {
+    let stderr = run_rexx_fail("data = 'test'; parse var data a (sep x");
+    assert!(
+        stderr.contains("Error 38"),
+        "expected Error 38, got: {stderr}"
     );
 }

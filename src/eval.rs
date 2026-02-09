@@ -421,6 +421,7 @@ impl<'a> Evaluator<'a> {
     }
 
     /// Assign a section of text to target variables using REXX word-parsing rules.
+    /// Per ANSI REXX, "blanks" include space (0x20) and horizontal tab (0x09).
     fn assign_section(&mut self, section: &str, targets: &[&TemplateElement]) {
         match targets.len() {
             0 => {} // no targets — just repositioning cursor
@@ -434,14 +435,15 @@ impl<'a> Evaluator<'a> {
                 for (j, target) in targets.iter().enumerate() {
                     if j == targets.len() - 1 {
                         // Last target: strip leading blanks, take rest
-                        self.assign_target(target, remaining.trim_start());
+                        let trimmed = remaining.trim_start_matches([' ', '\t']);
+                        self.assign_target(target, trimmed);
                     } else {
                         // Non-last: strip leading blanks, take one word
-                        let trimmed = remaining.trim_start();
-                        if let Some(space_pos) = trimmed.find(' ') {
-                            let word = &trimmed[..space_pos];
+                        let trimmed = remaining.trim_start_matches([' ', '\t']);
+                        if let Some(blank_pos) = trimmed.find([' ', '\t']) {
+                            let word = &trimmed[..blank_pos];
                             self.assign_target(target, word);
-                            remaining = &trimmed[space_pos..];
+                            remaining = &trimmed[blank_pos..];
                         } else {
                             // No more words
                             self.assign_target(target, trimmed);
@@ -462,7 +464,15 @@ impl<'a> Evaluator<'a> {
     }
 
     /// Split a template at Comma elements into sub-templates.
+    /// Fast path: if no commas, return the template as-is without cloning.
     fn split_template_at_commas(template: &ParseTemplate) -> Vec<ParseTemplate> {
+        if !template
+            .elements
+            .iter()
+            .any(|e| matches!(e, TemplateElement::Comma))
+        {
+            return vec![template.clone()];
+        }
         let mut result = Vec::new();
         let mut current = Vec::new();
         for elem in &template.elements {
