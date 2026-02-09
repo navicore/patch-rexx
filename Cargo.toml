@@ -17,6 +17,9 @@ clap = { version = "4.5", features = ["derive"] }
 # REPL line editing
 rustyline = "15"
 
+# Random number generation (RANDOM BIF)
+rand = "0.9"
+
 # Regex (for PARSE template patterns and BIFs)
 regex = "1.11"
 

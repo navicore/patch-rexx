@@ -240,18 +240,28 @@ impl<'a> Evaluator<'a> {
             }
         }
 
-        let signal = self.call_routine(name, args)?;
-        match signal {
-            ExecSignal::Return(Some(val)) => {
-                self.env.set("RESULT", val);
-                Ok(ExecSignal::Normal)
+        // Resolution order: 1) internal labels, 2) built-in functions, 3) error
+        if self.labels.contains_key(name) {
+            let signal = self.call_routine(name, args)?;
+            match signal {
+                ExecSignal::Return(Some(val)) => {
+                    self.env.set("RESULT", val);
+                    Ok(ExecSignal::Normal)
+                }
+                ExecSignal::Return(None) | ExecSignal::Normal => {
+                    self.env.drop("RESULT");
+                    Ok(ExecSignal::Normal)
+                }
+                ExecSignal::Exit(_) => Ok(signal),
+                ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(ExecSignal::Normal),
             }
-            ExecSignal::Return(None) | ExecSignal::Normal => {
-                self.env.drop("RESULT");
-                Ok(ExecSignal::Normal)
-            }
-            ExecSignal::Exit(_) => Ok(signal),
-            ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(ExecSignal::Normal),
+        } else if let Some(result) = crate::builtins::call_builtin(name, &args, &self.settings) {
+            let val = result?;
+            self.env.set("RESULT", val);
+            Ok(ExecSignal::Normal)
+        } else {
+            Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
+                .with_detail(format!("routine '{name}' not found")))
         }
     }
 
@@ -889,18 +899,28 @@ impl<'a> Evaluator<'a> {
                         return Ok(RexxValue::new(""));
                     }
                 }
-                let signal = self.call_routine(name, evaluated_args)?;
-                match signal {
-                    ExecSignal::Return(Some(val)) => Ok(val),
-                    ExecSignal::Return(None) | ExecSignal::Normal => {
-                        Err(RexxDiagnostic::new(RexxError::NoReturnData)
-                            .with_detail(format!("function '{name}' did not return data")))
+                // Resolution order: 1) internal labels, 2) built-in functions, 3) error
+                if self.labels.contains_key(name.as_str()) {
+                    let signal = self.call_routine(name, evaluated_args)?;
+                    match signal {
+                        ExecSignal::Return(Some(val)) => Ok(val),
+                        ExecSignal::Return(None) | ExecSignal::Normal => {
+                            Err(RexxDiagnostic::new(RexxError::NoReturnData)
+                                .with_detail(format!("function '{name}' did not return data")))
+                        }
+                        ExecSignal::Exit(val) => {
+                            self.pending_exit = PendingExit::WithValue(val);
+                            Ok(RexxValue::new(""))
+                        }
+                        ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
                     }
-                    ExecSignal::Exit(val) => {
-                        self.pending_exit = PendingExit::WithValue(val);
-                        Ok(RexxValue::new(""))
-                    }
-                    ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
+                } else if let Some(result) =
+                    crate::builtins::call_builtin(name, &evaluated_args, &self.settings)
+                {
+                    result
+                } else {
+                    Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
+                        .with_detail(format!("routine '{name}' not found")))
                 }
             }
         }

@@ -9,7 +9,8 @@
       "WebSearch",
       "WebFetch(domain:manmrk.net)",
       "WebFetch(domain:www.manmrk.net)",
-      "WebFetch(domain:grimore.org)"
+      "WebFetch(domain:grimore.org)",
+      "Bash(wc:*)"
     ]
   }
 }
