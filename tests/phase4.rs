@@ -408,3 +408,42 @@ fn error_template_paren_missing_close() {
         "expected Error 38, got: {stderr}"
     );
 }
+
+// ── UTF-8 safety ─────────────────────────────────────────
+
+#[test]
+fn parse_var_multibyte_absolute_position() {
+    // 🎯 is 4 bytes in UTF-8; position 2 means character 2, not byte 2
+    assert_eq!(
+        run_rexx("data = '🎯test'; parse var data a 2 b; say a '|' b"),
+        "🎯 | test"
+    );
+}
+
+#[test]
+fn parse_var_multibyte_relative_position() {
+    assert_eq!(
+        run_rexx("data = '🎯🎯rest'; parse var data a +2 b; say a '|' b"),
+        "🎯🎯 | rest"
+    );
+}
+
+#[test]
+fn parse_var_multibyte_word_split() {
+    // Word parsing on multi-byte characters
+    assert_eq!(
+        run_rexx("data = 'café latte'; parse var data a b; say a '|' b"),
+        "café | latte"
+    );
+}
+
+// ── Empty variable pattern ───────────────────────────────
+
+#[test]
+fn parse_var_empty_variable_pattern() {
+    // Empty pattern should be treated as not found; a gets all, b gets empty
+    assert_eq!(
+        run_rexx(r"sep = ''; data = 'hello'; parse var data a (sep) b; say a '|' b"),
+        "hello |"
+    );
+}

@@ -361,26 +361,27 @@ impl<'a> Evaluator<'a> {
                 TemplateElement::AbsolutePos(expr) => {
                     let pos_val = self.eval_expr(expr)?;
                     let pos = self.to_position_value(&pos_val)?;
-                    // REXX absolute positions are 1-based
+                    // REXX absolute positions are 1-based character positions
                     #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-                    let target = if pos > 0 { (pos - 1) as usize } else { 0 };
+                    let char_pos = if pos > 0 { (pos - 1) as usize } else { 0 };
+                    let target = Self::char_pos_to_byte_offset(source, char_pos);
                     let section = if target > cursor {
-                        &source[cursor..target.min(source.len())]
+                        &source[cursor..target]
                     } else {
                         ""
                     };
                     self.assign_section(section, &targets);
-                    cursor = target.min(source.len());
+                    cursor = target;
                     i += 1;
                 }
                 TemplateElement::RelativePos(offset) => {
+                    // Relative positions advance/retreat by characters, not bytes
                     #[allow(clippy::cast_sign_loss)]
                     let target = if *offset >= 0 {
-                        cursor.saturating_add(*offset as usize)
+                        Self::advance_chars(source, cursor, *offset as usize)
                     } else {
-                        cursor.saturating_sub((-*offset) as usize)
+                        Self::retreat_chars(source, cursor, (-*offset) as usize)
                     };
-                    let target = target.min(source.len());
                     let section = if target > cursor {
                         &source[cursor..target]
                     } else {
@@ -392,7 +393,10 @@ impl<'a> Evaluator<'a> {
                 }
                 TemplateElement::VariablePattern(name) => {
                     let pat = self.env.get(name).as_str().to_string();
-                    if let Some(found) = source[cursor..].find(pat.as_str()) {
+                    // Empty pattern is treated as not found per REXX semantics
+                    if !pat.is_empty()
+                        && let Some(found) = source[cursor..].find(pat.as_str())
+                    {
                         let abs = cursor + found;
                         let section = &source[cursor..abs];
                         self.assign_section(section, &targets);
@@ -500,6 +504,37 @@ impl<'a> Evaluator<'a> {
             }
         }
         line
+    }
+
+    /// Convert a 0-based character position to a byte offset in a UTF-8 string.
+    /// Clamps to `source.len()` if the character position exceeds the string length.
+    fn char_pos_to_byte_offset(source: &str, char_pos: usize) -> usize {
+        source
+            .char_indices()
+            .nth(char_pos)
+            .map_or(source.len(), |(byte_offset, _)| byte_offset)
+    }
+
+    /// Advance `n` characters forward from `byte_cursor` and return the new byte offset.
+    fn advance_chars(source: &str, byte_cursor: usize, n: usize) -> usize {
+        source[byte_cursor..]
+            .char_indices()
+            .nth(n)
+            .map_or(source.len(), |(offset, _)| byte_cursor + offset)
+    }
+
+    /// Retreat `n` characters backward from `byte_cursor` and return the new byte offset.
+    fn retreat_chars(source: &str, byte_cursor: usize, n: usize) -> usize {
+        // Collect char boundaries up to byte_cursor, then go back n
+        let boundaries: Vec<usize> = source[..byte_cursor]
+            .char_indices()
+            .map(|(i, _)| i)
+            .collect();
+        if n >= boundaries.len() {
+            0
+        } else {
+            boundaries[boundaries.len() - n]
+        }
     }
 
     /// Convert a value to a position (integer) for PARSE template positioning.
