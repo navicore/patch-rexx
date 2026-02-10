@@ -728,8 +728,7 @@ impl<'a> Evaluator<'a> {
     ) -> RexxResult<Option<ExecSignal>> {
         // 1. Resolve external file
         let source_dir = self.env.source_dir().map(Path::to_path_buf);
-        let Some((program, _path)) =
-            crate::external::resolve_external(name, source_dir.as_deref())?
+        let Some((program, path)) = crate::external::resolve_external(name, source_dir.as_deref())?
         else {
             return Ok(None);
         };
@@ -745,11 +744,18 @@ impl<'a> Evaluator<'a> {
         self.env.push_procedure();
         self.arg_stack.push(args);
 
-        // 4. Build labels for external program, execute via exec_interpret_body
+        // 4. Update source_path so nested external calls resolve relative to this file
+        let old_source_path = self.env.source_path().map(Path::to_path_buf);
+        self.env.set_source_path(path);
+
+        // 5. Build labels for external program, execute via exec_interpret_body
         let ext_labels = Self::build_labels(&program);
         let result = self.exec_interpret_body(&program.clauses, &ext_labels);
 
-        // 5. Clean up
+        // 6. Restore source_path, clean up scope
+        if let Some(old) = old_source_path {
+            self.env.set_source_path(old);
+        }
         self.arg_stack.pop();
         self.env.pop_procedure();
         self.external_depth -= 1;

@@ -207,3 +207,69 @@ fn external_no_return_expr() {
         stderr(&output)
     );
 }
+
+// ── Test 13: External calls external in subdirectory ─────────────────
+
+#[test]
+fn external_calls_external_subdir() {
+    let dir = TempDir::new().unwrap();
+    std::fs::create_dir(dir.path().join("lib")).unwrap();
+    write_file(&dir, "lib/util.rexx", "parse arg n; return n * 10");
+    // helper.rexx is in lib/ and calls util.rexx which is also in lib/
+    write_file(&dir, "lib/helper.rexx", "parse arg n; return util(n)");
+    // main calls lib/helper via REXXPATH
+    write_file(&dir, "main.rexx", "say helper(5)");
+    let output = Command::new(env!("CARGO_BIN_EXE_rexx"))
+        .arg(dir.path().join("main.rexx"))
+        .env("REXXPATH", dir.path().join("lib"))
+        .output()
+        .expect("failed to run rexx");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "50");
+}
+
+// ── Test 14: .rex extension works ────────────────────────────────────
+
+#[test]
+fn rex_extension() {
+    let dir = TempDir::new().unwrap();
+    write_file(&dir, "greet.rex", "return 'HELLO_REX'");
+    write_file(&dir, "main.rexx", "say greet()");
+    let output = run_rexx_file(&dir, "main.rexx");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "HELLO_REX");
+}
+
+// ── Test 15: External file with parse error propagates ───────────────
+
+#[test]
+fn external_parse_error() {
+    let dir = TempDir::new().unwrap();
+    write_file(&dir, "bad.rexx", "if then");
+    write_file(&dir, "main.rexx", "call bad");
+    let output = run_rexx_file(&dir, "main.rexx");
+    assert!(!output.status.success());
+    // Should get a parse error (Error 18 = THEN expected, or similar)
+    let err = stderr(&output);
+    assert!(!err.is_empty(), "expected a parse error");
+}
+
+// ── Test 16: Multiple REXXPATH entries ───────────────────────────────
+
+#[test]
+fn rexxpath_multiple_entries() {
+    let dir = TempDir::new().unwrap();
+    let lib1 = TempDir::new().unwrap();
+    let lib2 = TempDir::new().unwrap();
+    write_file(&lib1, "from_lib1.rexx", "return 'LIB1'");
+    write_file(&lib2, "from_lib2.rexx", "return 'LIB2'");
+    write_file(&dir, "main.rexx", "say from_lib1() from_lib2()");
+    let rexxpath = format!("{}:{}", lib1.path().display(), lib2.path().display());
+    let output = Command::new(env!("CARGO_BIN_EXE_rexx"))
+        .arg(dir.path().join("main.rexx"))
+        .env("REXXPATH", &rexxpath)
+        .output()
+        .expect("failed to run rexx");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "LIB1 LIB2");
+}
