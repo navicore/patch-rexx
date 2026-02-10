@@ -87,6 +87,9 @@ pub fn call_builtin(
         // Condition
         "CONDITION" => bif_condition(args, env),
 
+        // Address
+        "ADDRESS" => bif_address(args, env),
+
         _ => return None,
     };
     Some(result)
@@ -1647,6 +1650,13 @@ fn bif_condition(args: &[RexxValue], env: &Environment) -> RexxResult<RexxValue>
         }
     };
     Ok(RexxValue::new(result))
+}
+
+// ── Address BIF ──────────────────────────────────────────────────────
+
+fn bif_address(args: &[RexxValue], env: &Environment) -> RexxResult<RexxValue> {
+    check_args("ADDRESS", args, 0, 0)?;
+    Ok(RexxValue::new(env.address()))
 }
 
 #[cfg(test)]

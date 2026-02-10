@@ -24,6 +24,10 @@ pub struct Environment {
     scopes: Vec<Scope>,
     /// Most recent condition trap info (for `CONDITION()` BIF).
     pub condition_info: Option<ConditionInfoData>,
+    /// Current default ADDRESS environment (initially "SYSTEM").
+    address_default: String,
+    /// Previous ADDRESS environment (initially "SYSTEM").
+    address_previous: String,
 }
 
 /// A single variable scope.
@@ -52,6 +56,8 @@ impl Environment {
         Self {
             scopes: vec![Scope::new()],
             condition_info: None,
+            address_default: "SYSTEM".to_string(),
+            address_previous: "SYSTEM".to_string(),
         }
     }
 
@@ -173,6 +179,21 @@ impl Environment {
                 }
             }
         }
+    }
+
+    /// Return the current default ADDRESS environment name.
+    pub fn address(&self) -> &str {
+        &self.address_default
+    }
+
+    /// Set a new default ADDRESS environment, saving the old as previous.
+    pub fn set_address(&mut self, env: &str) {
+        self.address_previous = std::mem::replace(&mut self.address_default, env.to_string());
+    }
+
+    /// Swap default ↔ previous ADDRESS environment.
+    pub fn swap_address(&mut self) {
+        std::mem::swap(&mut self.address_default, &mut self.address_previous);
     }
 
     /// Set condition info (called when a trap fires).
