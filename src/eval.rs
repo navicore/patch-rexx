@@ -216,8 +216,11 @@ impl<'a> Evaluator<'a> {
                         RexxDiagnostic::new(RexxError::LabelNotFound)
                             .with_detail(format!("label '{label}' not found"))
                     })?;
-                    // Trace the label clause if at Labels level or above
-                    if self.trace_setting.level >= TraceLevel::Labels {
+                    // Trace the label clause at Labels or All level per ANSI REXX
+                    if matches!(
+                        self.trace_setting.level,
+                        TraceLevel::Labels | TraceLevel::All
+                    ) {
                         self.trace_clause(&self.program.clauses[idx]);
                     }
                     start = idx + 1;
@@ -263,11 +266,25 @@ impl<'a> Evaluator<'a> {
     fn exec_clause_outer(&mut self, clause: &Clause) -> RexxResult<ExecSignal> {
         let trace_level = self.trace_setting.level;
 
-        // Pre-execution trace: source line for certain levels
+        // Pre-execution trace: source line per ANSI REXX §8.3.36.
+        // Labels: only at Labels or All level.
+        // Commands: at Commands, Results, Intermediates, All.
+        // Other clauses: at Results, Intermediates, All.
         let should_trace_source = match &clause.kind {
-            ClauseKind::Label(_) => trace_level >= TraceLevel::Labels,
-            ClauseKind::Command(_) => trace_level >= TraceLevel::Commands,
-            _ => trace_level >= TraceLevel::Results,
+            ClauseKind::Label(_) => {
+                matches!(trace_level, TraceLevel::Labels | TraceLevel::All)
+            }
+            ClauseKind::Command(_) => matches!(
+                trace_level,
+                TraceLevel::Commands
+                    | TraceLevel::Results
+                    | TraceLevel::Intermediates
+                    | TraceLevel::All
+            ),
+            _ => matches!(
+                trace_level,
+                TraceLevel::Results | TraceLevel::Intermediates | TraceLevel::All
+            ),
         };
         if should_trace_source && !matches!(clause.kind, ClauseKind::Nop) {
             self.trace_clause(clause);
@@ -304,6 +321,7 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn exec_clause(&mut self, clause: &Clause) -> RexxResult<ExecSignal> {
         match &clause.kind {
             ClauseKind::Say(expr) => {
@@ -311,7 +329,10 @@ impl<'a> Evaluator<'a> {
                 if self.pending_exit.is_pending() {
                     return Ok(ExecSignal::Normal);
                 }
-                if self.trace_setting.level >= TraceLevel::Results {
+                if matches!(
+                    self.trace_setting.level,
+                    TraceLevel::Results | TraceLevel::Intermediates | TraceLevel::All
+                ) {
                     self.trace_tag(">>", val.as_str());
                 }
                 println!("{val}");
@@ -319,7 +340,10 @@ impl<'a> Evaluator<'a> {
             }
             ClauseKind::Assignment { target, expr } => {
                 let val = self.eval_expr(expr)?;
-                if self.trace_setting.level >= TraceLevel::Results {
+                if matches!(
+                    self.trace_setting.level,
+                    TraceLevel::Results | TraceLevel::Intermediates | TraceLevel::All
+                ) {
                     self.trace_tag(">>", val.as_str());
                 }
                 match target {
@@ -532,25 +556,37 @@ impl<'a> Evaluator<'a> {
         eprintln!("       >{tag}> \"{value}\"");
     }
 
-    /// Conditionally trace an intermediate value (only at Intermediates level or above).
+    /// Conditionally trace an intermediate value (only at Intermediates or All level).
     fn trace_intermediates(&self, tag: &str, value: &str) {
-        if self.trace_setting.level >= TraceLevel::Intermediates {
+        if matches!(
+            self.trace_setting.level,
+            TraceLevel::Intermediates | TraceLevel::All
+        ) {
             self.trace_tag(tag, value);
         }
     }
 
     /// Handle interactive pause: read stdin lines and execute via INTERPRET.
+    /// Per ANSI REXX, only a null line (no characters at all, not even spaces)
+    /// continues execution. Any other input is executed as REXX code.
     fn trace_interactive_pause(&mut self) -> RexxResult<()> {
         if !self.trace_setting.interactive {
             return Ok(());
         }
         loop {
             let mut line = String::new();
-            if std::io::stdin().read_line(&mut line).is_err() || line.trim().is_empty() {
+            match std::io::stdin().read_line(&mut line) {
+                Ok(0) | Err(_) => break, // EOF or I/O error
+                Ok(_) => {}
+            }
+            // Strip trailing newline/carriage return only (preserve interior whitespace)
+            let content = line.trim_end_matches(['\n', '\r']);
+            // Null line (empty after stripping newline) → continue execution
+            if content.is_empty() {
                 break;
             }
             // Execute the input as REXX via the existing interpret machinery
-            let source = line.trim().to_string();
+            let source = content.trim().to_string();
             let mut lexer = Lexer::new(&source);
             let tokens = lexer.tokenize()?;
             let mut parser = Parser::new(tokens);
@@ -1472,7 +1508,7 @@ impl<'a> Evaluator<'a> {
                         return Ok(RexxValue::new(old));
                     } else if !evaluated_args.is_empty() {
                         return Err(RexxDiagnostic::new(RexxError::IncorrectCall)
-                            .with_detail("TRACE function expects 0 or 1 arguments"));
+                            .with_detail("TRACE expects 0 or 1 arguments"));
                     }
                     return Ok(RexxValue::new(self.trace_setting.to_string()));
                 }

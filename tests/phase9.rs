@@ -360,3 +360,102 @@ fn trace_compound_via_symbol() {
         "compound via symbol should show >V>, got: {stderr}"
     );
 }
+
+// ── ANSI REXX adherence: label tracing semantics ────────────────────
+
+#[test]
+fn adherence_labels_level_traces_only_labels() {
+    // TRACE L should trace labels but NOT regular clauses like SAY
+    let (_stdout, stderr) = run_rexx_stderr("trace l; signal myLabel; myLabel:; say 'found'");
+    // The label should be traced
+    assert!(
+        stderr.contains("*-*"),
+        "trace l should trace the label, got: {stderr}"
+    );
+    // But SAY result should NOT appear in trace
+    assert!(
+        !stderr.contains(">>>"),
+        "trace l should NOT trace expression results, got: {stderr}"
+    );
+}
+
+#[test]
+fn adherence_results_does_not_trace_labels() {
+    // TRACE R should NOT trace labels — labels only at L and A
+    // With all clauses on one line, we count *-* lines to verify:
+    // Expected: SIGNAL + SAY = 2 traced clauses (label NOT traced)
+    let (_stdout, stderr) = run_rexx_stderr("trace r; signal myLabel; myLabel:; say 'found'");
+    let star_count = stderr.lines().filter(|l| l.contains("*-*")).count();
+    assert_eq!(
+        star_count, 2,
+        "trace r should trace SIGNAL + SAY (2), not the label, got {star_count}: {stderr}"
+    );
+}
+
+#[test]
+fn adherence_intermediates_does_not_trace_labels() {
+    // TRACE I should NOT trace labels
+    // Expected: SIGNAL + SAY = 2 traced clauses (label NOT traced)
+    let (_stdout, stderr) = run_rexx_stderr("trace i; signal myLabel; myLabel:; say 'found'");
+    let star_count = stderr.lines().filter(|l| l.contains("*-*")).count();
+    assert_eq!(
+        star_count, 2,
+        "trace i should trace SIGNAL + SAY (2), not the label, got {star_count}: {stderr}"
+    );
+}
+
+#[test]
+fn adherence_commands_does_not_trace_labels() {
+    // TRACE C should trace commands only, not labels or SIGNAL/SAY
+    // Expected: only 'echo done' = 1 traced clause
+    let (_stdout, stderr) = run_rexx_stderr("trace c; signal myLabel; myLabel:; 'echo done'");
+    let star_count = stderr.lines().filter(|l| l.contains("*-*")).count();
+    assert_eq!(
+        star_count, 1,
+        "trace c should trace only the command (1), got {star_count}: {stderr}"
+    );
+}
+
+#[test]
+fn adherence_all_traces_labels_and_clauses() {
+    // TRACE A should trace BOTH labels and regular clauses
+    // Expected: SIGNAL + label + SAY = 3 traced clauses
+    let (_stdout, stderr) = run_rexx_stderr("trace a; signal myLabel; myLabel:; say 'found'");
+    let star_count = stderr.lines().filter(|l| l.contains("*-*")).count();
+    assert_eq!(
+        star_count, 3,
+        "trace a should trace SIGNAL + label + SAY (3), got {star_count}: {stderr}"
+    );
+    assert!(
+        stderr.contains(">>>"),
+        "trace a should also trace results, got: {stderr}"
+    );
+}
+
+#[test]
+fn adherence_commands_traces_commands_not_say() {
+    // TRACE C should trace only command clauses, not SAY
+    // Expected: only 'echo cmd' = 1 traced clause
+    let (_stdout, stderr) = run_rexx_stderr("trace c; say 'hello'; 'echo cmd'");
+    let star_count = stderr.lines().filter(|l| l.contains("*-*")).count();
+    assert_eq!(
+        star_count, 1,
+        "trace c should trace only the command (1), not SAY, got {star_count}: {stderr}"
+    );
+}
+
+#[test]
+fn adherence_trace_bif_toggle_only() {
+    // TRACE('?') should toggle interactive without changing level
+    // Start with default N, toggle interactive on
+    let result = run_rexx("old = trace('?'); say old trace()");
+    assert_eq!(result, "N ?N");
+}
+
+#[test]
+fn adherence_trace_bif_toggle_off() {
+    // Toggle interactive on, then off again
+    let result = run_rexx("call trace '?R'; call trace '?'; say trace()");
+    // First sets to ?R (interactive Results); second ? toggles interactive off → R
+    assert_eq!(result, "R");
+}
