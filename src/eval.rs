@@ -78,7 +78,15 @@ struct TraceSetting {
     interactive: bool,
 }
 
-impl TraceSetting {
+/// Result of parsing a trace setting string.
+enum TraceAction {
+    /// "?" alone — toggle interactive mode, keep current level.
+    ToggleInteractive,
+    /// A concrete setting (e.g., "R", "?R", "OFF").
+    Set(TraceSetting),
+}
+
+impl TraceAction {
     /// Parse a trace setting string like "R", "?R", "?", "OFF", "?Results".
     fn parse(s: &str) -> Option<Self> {
         let trimmed = s.trim();
@@ -86,27 +94,20 @@ impl TraceSetting {
             return None;
         }
         if trimmed == "?" {
-            // Toggle interactive only — return a sentinel; caller handles toggle.
-            return Some(Self {
-                level: TraceLevel::Normal, // placeholder — caller will keep current level
-                interactive: true,
-            });
+            return Some(Self::ToggleInteractive);
         }
-        if let Some(rest) = trimmed
-            .strip_prefix('?')
-            .or_else(|| trimmed.strip_prefix('?'))
-        {
+        if let Some(rest) = trimmed.strip_prefix('?') {
             let level = TraceLevel::parse(rest)?;
-            Some(Self {
+            Some(Self::Set(TraceSetting {
                 level,
                 interactive: true,
-            })
+            }))
         } else {
             let level = TraceLevel::parse(trimmed)?;
-            Some(Self {
+            Some(Self::Set(TraceSetting {
                 level,
                 interactive: false,
-            })
+            }))
         }
     }
 }
@@ -488,25 +489,32 @@ impl<'a> Evaluator<'a> {
 
     // ── TRACE execution ────────────────────────────────────────────
 
+    /// Apply a trace setting string, returning the previous setting as a string.
+    /// Shared by TRACE instruction, `TRACE()` BIF, and CALL TRACE.
+    fn apply_trace_setting(&mut self, s: &str) -> RexxResult<String> {
+        let old = self.trace_setting.to_string();
+        let action = TraceAction::parse(s).ok_or_else(|| {
+            RexxDiagnostic::new(RexxError::InvalidTrace)
+                .with_detail(format!("invalid trace setting '{s}'"))
+        })?;
+        match action {
+            TraceAction::ToggleInteractive => {
+                self.trace_setting.interactive = !self.trace_setting.interactive;
+            }
+            TraceAction::Set(new_setting) => {
+                self.trace_setting = new_setting;
+            }
+        }
+        Ok(old)
+    }
+
     /// Execute a TRACE instruction: evaluate setting, update trace state.
     fn exec_trace(&mut self, expr: &Expr) -> RexxResult<ExecSignal> {
         let val = self.eval_expr(expr)?;
         if self.pending_exit.is_pending() || self.pending_signal.is_some() {
             return Ok(ExecSignal::Normal);
         }
-        let s = val.as_str().to_string();
-
-        // "?" alone toggles interactive mode
-        if s.trim() == "?" {
-            self.trace_setting.interactive = !self.trace_setting.interactive;
-            return Ok(ExecSignal::Normal);
-        }
-
-        let new_setting = TraceSetting::parse(&s).ok_or_else(|| {
-            RexxDiagnostic::new(RexxError::InvalidTrace)
-                .with_detail(format!("invalid trace setting '{s}'"))
-        })?;
-        self.trace_setting = new_setting;
+        self.apply_trace_setting(val.as_str())?;
         Ok(ExecSignal::Normal)
     }
 
@@ -682,23 +690,16 @@ impl<'a> Evaluator<'a> {
 
         // CALL TRACE — handle before normal dispatch
         if name.eq_ignore_ascii_case("TRACE") {
-            let old = self.trace_setting.to_string();
             if args.len() == 1 {
-                let s = args[0].as_str().to_string();
-                if s.trim() == "?" {
-                    self.trace_setting.interactive = !self.trace_setting.interactive;
-                } else {
-                    let new_setting = TraceSetting::parse(&s).ok_or_else(|| {
-                        RexxDiagnostic::new(RexxError::InvalidTrace)
-                            .with_detail(format!("invalid trace setting '{s}'"))
-                    })?;
-                    self.trace_setting = new_setting;
-                }
-            } else if !args.is_empty() {
+                let old = self.apply_trace_setting(args[0].as_str())?;
+                self.env.set("RESULT", RexxValue::new(old));
+            } else if args.is_empty() {
+                let old = self.trace_setting.to_string();
+                self.env.set("RESULT", RexxValue::new(old));
+            } else {
                 return Err(RexxDiagnostic::new(RexxError::IncorrectCall)
                     .with_detail("TRACE expects 0 or 1 arguments"));
             }
-            self.env.set("RESULT", RexxValue::new(old));
             return Ok(ExecSignal::Normal);
         }
 
@@ -1466,23 +1467,14 @@ impl<'a> Evaluator<'a> {
                 }
                 // TRACE() BIF — needs evaluator state, handle before normal dispatch
                 if name.eq_ignore_ascii_case("TRACE") {
-                    let old = self.trace_setting.to_string();
                     if evaluated_args.len() == 1 {
-                        let s = evaluated_args[0].as_str().to_string();
-                        if s.trim() == "?" {
-                            self.trace_setting.interactive = !self.trace_setting.interactive;
-                        } else {
-                            let new_setting = TraceSetting::parse(&s).ok_or_else(|| {
-                                RexxDiagnostic::new(RexxError::InvalidTrace)
-                                    .with_detail(format!("invalid trace setting '{s}'"))
-                            })?;
-                            self.trace_setting = new_setting;
-                        }
+                        let old = self.apply_trace_setting(evaluated_args[0].as_str())?;
+                        return Ok(RexxValue::new(old));
                     } else if !evaluated_args.is_empty() {
                         return Err(RexxDiagnostic::new(RexxError::IncorrectCall)
                             .with_detail("TRACE function expects 0 or 1 arguments"));
                     }
-                    return Ok(RexxValue::new(old));
+                    return Ok(RexxValue::new(self.trace_setting.to_string()));
                 }
 
                 // Resolution order: 1) internal labels, 2) built-in functions, 3) error
