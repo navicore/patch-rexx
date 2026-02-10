@@ -1,20 +1,9 @@
-// TODO: remove once all AST / value / env types are used by later phases
-#![allow(dead_code)]
-
-mod ast;
-mod builtins;
-mod env;
-mod error;
-mod eval;
-mod lexer;
-mod parser;
-mod value;
-
 use clap::Parser;
+use patch_rexx::{env, error, eval, lexer, parser, value};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "patch-rexx")]
+#[command(name = "rexx")]
 #[command(about = "A modern REXX interpreter")]
 #[command(version)]
 struct Cli {
@@ -53,7 +42,7 @@ fn main() {
                 }
             }
             Err(e) => {
-                eprintln!("patch-rexx: cannot read {}: {}", path.display(), e);
+                eprintln!("rexx: cannot read {}: {}", path.display(), e);
                 std::process::exit(1);
             }
         }
@@ -93,16 +82,13 @@ fn run_line(
 }
 
 fn run_repl() {
-    println!(
-        "patch-rexx {} — interactive mode",
-        env!("CARGO_PKG_VERSION")
-    );
+    println!("rexx {} — interactive mode", env!("CARGO_PKG_VERSION"));
     println!("Type REXX statements. Use EXIT to quit.\n");
 
     let mut rl = match rustyline::DefaultEditor::new() {
         Ok(rl) => rl,
         Err(e) => {
-            eprintln!("patch-rexx: cannot initialize line editor: {e}");
+            eprintln!("rexx: cannot initialize line editor: {e}");
             std::process::exit(1);
         }
     };
@@ -130,7 +116,7 @@ fn run_repl() {
                 break;
             }
             Err(e) => {
-                eprintln!("patch-rexx: {e}");
+                eprintln!("rexx: {e}");
                 break;
             }
         }

@@ -1,7 +1,7 @@
 use std::process::Command;
 
 fn run_rexx(expr: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_patch-rexx"))
+    let output = Command::new(env!("CARGO_BIN_EXE_rexx"))
         .args(["-e", expr])
         .output()
         .expect("failed to run patch-rexx");
