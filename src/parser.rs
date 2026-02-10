@@ -5,8 +5,8 @@
 //! recognised by context at the start of a clause.
 
 use crate::ast::{
-    AssignTarget, BinOp, Clause, ClauseKind, Condition, ControlledLoop, DoBlock, DoKind, Expr,
-    ParseSource, ParseTemplate, Program, SignalAction, TemplateElement, UnaryOp,
+    AddressAction, AssignTarget, BinOp, Clause, ClauseKind, Condition, ControlledLoop, DoBlock,
+    DoKind, Expr, ParseSource, ParseTemplate, Program, SignalAction, TemplateElement, UnaryOp,
 };
 use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
 use crate::lexer::{Token, TokenKind};
@@ -169,6 +169,7 @@ impl Parser {
 
     // ── clause parsing ──────────────────────────────────────────────
 
+    #[allow(clippy::too_many_lines)]
     fn parse_clause(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
 
@@ -287,6 +288,11 @@ impl Parser {
             // INTERPRET instruction
             if Self::check_keyword(name, "INTERPRET") {
                 return self.parse_interpret();
+            }
+
+            // ADDRESS instruction
+            if Self::check_keyword(name, "ADDRESS") {
+                return self.parse_address();
             }
 
             // Stray END outside DO/SELECT
@@ -1140,6 +1146,60 @@ impl Parser {
             kind: ClauseKind::Interpret(expr),
             loc,
         })
+    }
+
+    // ── ADDRESS parsing ───────────────────────────────────────────────
+
+    /// Parse: ADDRESS [env [command]] | ADDRESS VALUE expr | ADDRESS (swap)
+    fn parse_address(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume ADDRESS
+
+        // Bare ADDRESS → swap default ↔ previous
+        if self.is_terminator() {
+            return Ok(Clause {
+                kind: ClauseKind::Address(AddressAction::SetEnvironment(String::new())),
+                loc,
+            });
+        }
+
+        // ADDRESS VALUE expr → dynamic environment name
+        if self.is_keyword("VALUE") {
+            self.advance(); // consume VALUE
+            let expr = self.parse_expression()?;
+            return Ok(Clause {
+                kind: ClauseKind::Address(AddressAction::Value(expr)),
+                loc,
+            });
+        }
+
+        // ADDRESS env [command]
+        if let TokenKind::Symbol(name) = self.peek_kind().clone() {
+            let env_name = name.to_uppercase();
+            self.advance(); // consume environment name
+
+            if self.is_terminator() {
+                // ADDRESS env — set default
+                return Ok(Clause {
+                    kind: ClauseKind::Address(AddressAction::SetEnvironment(env_name)),
+                    loc,
+                });
+            }
+
+            // ADDRESS env command — one-shot
+            let command = self.parse_expression()?;
+            return Ok(Clause {
+                kind: ClauseKind::Address(AddressAction::Temporary {
+                    environment: env_name,
+                    command,
+                }),
+                loc,
+            });
+        }
+
+        Err(RexxDiagnostic::new(RexxError::ExpectedSymbol)
+            .at(self.loc())
+            .with_detail("expected environment name, VALUE, or end of clause after ADDRESS"))
     }
 
     // ── expression parsing (precedence climbing) ────────────────────

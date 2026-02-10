@@ -9,8 +9,9 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use crate::ast::{
-    AssignTarget, BinOp, Clause, ClauseKind, Condition, ControlledLoop, DoBlock, DoKind, Expr,
-    ParseSource, ParseTemplate, Program, SignalAction, TailElement, TemplateElement, UnaryOp,
+    AddressAction, AssignTarget, BinOp, Clause, ClauseKind, Condition, ControlledLoop, DoBlock,
+    DoKind, Expr, ParseSource, ParseTemplate, Program, SignalAction, TailElement, TemplateElement,
+    UnaryOp,
 };
 use crate::env::Environment;
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
@@ -193,9 +194,11 @@ impl<'a> Evaluator<'a> {
                 Ok(ExecSignal::Normal)
             }
             ClauseKind::Command(expr) => {
-                // Evaluate and discard — future: host command
-                let _val = self.eval_expr(expr)?;
-                Ok(ExecSignal::Normal)
+                let val = self.eval_expr(expr)?;
+                if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+                    return Ok(ExecSignal::Normal);
+                }
+                Ok(self.exec_host_command(val.as_str()))
             }
             ClauseKind::If {
                 condition,
@@ -251,14 +254,98 @@ impl<'a> Evaluator<'a> {
                 Ok(ExecSignal::Normal)
             }
             ClauseKind::Interpret(expr) => self.exec_interpret(expr),
+            ClauseKind::Address(action) => self.exec_address(action),
             ClauseKind::Numeric(_)
-            | ClauseKind::Address(_)
             | ClauseKind::Push(_)
             | ClauseKind::Queue(_)
             | ClauseKind::Trace(_) => {
                 // Other clause types not yet implemented
                 Ok(ExecSignal::Normal)
             }
+        }
+    }
+
+    // ── ADDRESS / host command execution ───────────────────────────
+
+    /// Execute an ADDRESS instruction.
+    fn exec_address(&mut self, action: &AddressAction) -> RexxResult<ExecSignal> {
+        match action {
+            AddressAction::SetEnvironment(name) => {
+                if name.is_empty() {
+                    self.env.swap_address();
+                } else {
+                    self.env.set_address(name);
+                }
+                Ok(ExecSignal::Normal)
+            }
+            AddressAction::Value(expr) => {
+                let val = self.eval_expr(expr)?;
+                if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+                    return Ok(ExecSignal::Normal);
+                }
+                let name = val.as_str().to_uppercase();
+                self.env.set_address(&name);
+                Ok(ExecSignal::Normal)
+            }
+            AddressAction::Temporary {
+                environment,
+                command,
+            } => {
+                let cmd_val = self.eval_expr(command)?;
+                if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+                    return Ok(ExecSignal::Normal);
+                }
+                let cmd_str = cmd_val.as_str().to_string();
+                // Temporarily switch environment, run command, then restore.
+                let saved_default = self.env.address().to_string();
+                self.env.set_address(environment);
+                let signal = self.exec_host_command(&cmd_str);
+                // Restore: set_address saves current as previous, which is
+                // what we want — the temporary env becomes previous per REXX.
+                self.env.set_address(&saved_default);
+                Ok(signal)
+            }
+        }
+    }
+
+    /// Execute a host command: run via `sh -c`, set RC, fire ERROR/FAILURE conditions.
+    fn exec_host_command(&mut self, command: &str) -> ExecSignal {
+        let result = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(command)
+            .status();
+
+        if let Ok(status) = result {
+            let rc = status.code().unwrap_or(-1);
+            self.env.set("RC", RexxValue::new(rc.to_string()));
+
+            if rc != 0
+                && let Some(label) = self.traps.get(&Condition::Error).cloned()
+            {
+                self.env.set_condition_info(crate::env::ConditionInfoData {
+                    condition: "ERROR".to_string(),
+                    description: command.to_string(),
+                    instruction: "SIGNAL".to_string(),
+                    status: "ON".to_string(),
+                });
+                self.traps.remove(&Condition::Error);
+                return ExecSignal::Signal(label);
+            }
+            ExecSignal::Normal
+        } else {
+            self.env.set("RC", RexxValue::new("-1"));
+
+            if let Some(label) = self.traps.get(&Condition::Failure).cloned() {
+                self.env.set_condition_info(crate::env::ConditionInfoData {
+                    condition: "FAILURE".to_string(),
+                    description: command.to_string(),
+                    instruction: "SIGNAL".to_string(),
+                    status: "ON".to_string(),
+                });
+                self.traps.remove(&Condition::Failure);
+                return ExecSignal::Signal(label);
+            }
+            ExecSignal::Normal
         }
     }
 
