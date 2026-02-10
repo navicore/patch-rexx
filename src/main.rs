@@ -1,16 +1,5 @@
-// TODO: remove once all AST / value / env types are used by later phases
-#![allow(dead_code)]
-
-mod ast;
-mod builtins;
-mod env;
-mod error;
-mod eval;
-mod lexer;
-mod parser;
-mod value;
-
 use clap::Parser;
+use patch_rexx::{env, error, eval, lexer, parser, value};
 use std::path::PathBuf;
 
 #[derive(Parser)]

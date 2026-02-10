@@ -6,6 +6,10 @@ authors = ["Ed Sweeney <ed@onextent.com>"]
 license = "MIT"
 description = "A modern REXX interpreter in Rust"
 
+[features]
+default = []
+lsp = ["dep:tower-lsp", "dep:tokio", "dep:serde_json"]
+
 [dependencies]
 # Arbitrary-precision decimal arithmetic (REXX's core numeric model)
 bigdecimal = "0.4"
@@ -26,8 +30,22 @@ regex = "1.11"
 # Home directory (for profile/config)
 home = "0.5"
 
+# LSP (optional, enabled via `lsp` feature)
+tower-lsp = { version = "0.20", optional = true }
+tokio = { version = "1", features = ["full"], optional = true }
+serde_json = { version = "1", optional = true }
+
 [dev-dependencies]
 tempfile = "3"
+
+[[bin]]
+name = "patch-rexx"
+path = "src/main.rs"
+
+[[bin]]
+name = "patch-rexx-lsp"
+path = "src/bin/patch-rexx-lsp.rs"
+required-features = ["lsp"]
 
 [lints.rust]
 unsafe_code = "forbid"
