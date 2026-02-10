@@ -6,6 +6,7 @@
 
 use bigdecimal::{BigDecimal, Zero};
 use std::collections::HashMap;
+use std::fmt;
 use std::str::FromStr;
 
 use crate::ast::{
@@ -21,6 +22,113 @@ use crate::value::{NumericSettings, RexxValue};
 
 /// Maximum nesting depth for INTERPRET to prevent stack overflow.
 const MAX_INTERPRET_DEPTH: usize = 100;
+
+/// REXX trace levels, ordered from least to most verbose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum TraceLevel {
+    Off,
+    Normal,
+    Failure,
+    Errors,
+    Commands,
+    Labels,
+    Results,
+    Intermediates,
+    All,
+}
+
+impl TraceLevel {
+    /// Parse a single-letter or full-word trace level (case-insensitive).
+    fn parse(s: &str) -> Option<Self> {
+        let upper = s.trim().to_uppercase();
+        match upper.as_str() {
+            "O" | "OFF" => Some(Self::Off),
+            "N" | "NORMAL" => Some(Self::Normal),
+            "F" | "FAILURE" => Some(Self::Failure),
+            "E" | "ERRORS" => Some(Self::Errors),
+            "C" | "COMMANDS" => Some(Self::Commands),
+            "L" | "LABELS" => Some(Self::Labels),
+            "R" | "RESULTS" => Some(Self::Results),
+            "I" | "INTERMEDIATES" => Some(Self::Intermediates),
+            "A" | "ALL" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    /// Return the single-letter representation.
+    fn letter(self) -> char {
+        match self {
+            Self::Off => 'O',
+            Self::Normal => 'N',
+            Self::Failure => 'F',
+            Self::Errors => 'E',
+            Self::Commands => 'C',
+            Self::Labels => 'L',
+            Self::Results => 'R',
+            Self::Intermediates => 'I',
+            Self::All => 'A',
+        }
+    }
+}
+
+/// Combined trace setting: level + interactive flag.
+#[derive(Debug, Clone)]
+struct TraceSetting {
+    level: TraceLevel,
+    interactive: bool,
+}
+
+impl TraceSetting {
+    /// Parse a trace setting string like "R", "?R", "?", "OFF", "?Results".
+    fn parse(s: &str) -> Option<Self> {
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        if trimmed == "?" {
+            // Toggle interactive only — return a sentinel; caller handles toggle.
+            return Some(Self {
+                level: TraceLevel::Normal, // placeholder — caller will keep current level
+                interactive: true,
+            });
+        }
+        if let Some(rest) = trimmed
+            .strip_prefix('?')
+            .or_else(|| trimmed.strip_prefix('?'))
+        {
+            let level = TraceLevel::parse(rest)?;
+            Some(Self {
+                level,
+                interactive: true,
+            })
+        } else {
+            let level = TraceLevel::parse(trimmed)?;
+            Some(Self {
+                level,
+                interactive: false,
+            })
+        }
+    }
+}
+
+impl Default for TraceSetting {
+    fn default() -> Self {
+        Self {
+            level: TraceLevel::Normal,
+            interactive: false,
+        }
+    }
+}
+
+impl fmt::Display for TraceSetting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.interactive {
+            write!(f, "?{}", self.level.letter())
+        } else {
+            write!(f, "{}", self.level.letter())
+        }
+    }
+}
 
 /// Signal returned by clause/block execution for control flow.
 pub enum ExecSignal {
@@ -67,6 +175,8 @@ pub struct Evaluator<'a> {
     pending_signal: Option<String>,
     /// Current INTERPRET nesting depth (for recursion limit).
     interpret_depth: usize,
+    /// Current TRACE setting (level + interactive flag).
+    trace_setting: TraceSetting,
 }
 
 impl<'a> Evaluator<'a> {
@@ -82,6 +192,7 @@ impl<'a> Evaluator<'a> {
             traps: HashMap::new(),
             pending_signal: None,
             interpret_depth: 0,
+            trace_setting: TraceSetting::default(),
         }
     }
 
@@ -104,6 +215,10 @@ impl<'a> Evaluator<'a> {
                         RexxDiagnostic::new(RexxError::LabelNotFound)
                             .with_detail(format!("label '{label}' not found"))
                     })?;
+                    // Trace the label clause if at Labels level or above
+                    if self.trace_setting.level >= TraceLevel::Labels {
+                        self.trace_clause(&self.program.clauses[idx]);
+                    }
                     start = idx + 1;
                 }
                 other => return Ok(other),
@@ -143,10 +258,28 @@ impl<'a> Evaluator<'a> {
         Ok(ExecSignal::Normal)
     }
 
-    /// Outer clause executor: wraps `exec_clause` with SYNTAX trap support.
+    /// Outer clause executor: wraps `exec_clause` with SYNTAX trap support and TRACE output.
     fn exec_clause_outer(&mut self, clause: &Clause) -> RexxResult<ExecSignal> {
+        let trace_level = self.trace_setting.level;
+
+        // Pre-execution trace: source line for certain levels
+        let should_trace_source = match &clause.kind {
+            ClauseKind::Label(_) => trace_level >= TraceLevel::Labels,
+            ClauseKind::Command(_) => trace_level >= TraceLevel::Commands,
+            _ => trace_level >= TraceLevel::Results,
+        };
+        if should_trace_source && !matches!(clause.kind, ClauseKind::Nop) {
+            self.trace_clause(clause);
+        }
+
         match self.exec_clause(clause) {
-            Ok(signal) => Ok(signal),
+            Ok(signal) => {
+                // Post-execution trace for interactive pause
+                if should_trace_source && !matches!(clause.kind, ClauseKind::Nop) {
+                    self.trace_interactive_pause()?;
+                }
+                Ok(signal)
+            }
             Err(diag) => {
                 if let Some(label) = self.traps.get(&Condition::Syntax).cloned() {
                     // Set RC to the error number
@@ -177,11 +310,17 @@ impl<'a> Evaluator<'a> {
                 if self.pending_exit.is_pending() {
                     return Ok(ExecSignal::Normal);
                 }
+                if self.trace_setting.level >= TraceLevel::Results {
+                    self.trace_tag(">>", val.as_str());
+                }
                 println!("{val}");
                 Ok(ExecSignal::Normal)
             }
             ClauseKind::Assignment { target, expr } => {
                 let val = self.eval_expr(expr)?;
+                if self.trace_setting.level >= TraceLevel::Results {
+                    self.trace_tag(">>", val.as_str());
+                }
                 match target {
                     AssignTarget::Simple(name) => {
                         self.env.set(name, val);
@@ -255,10 +394,8 @@ impl<'a> Evaluator<'a> {
             }
             ClauseKind::Interpret(expr) => self.exec_interpret(expr),
             ClauseKind::Address(action) => self.exec_address(action),
-            ClauseKind::Numeric(_)
-            | ClauseKind::Push(_)
-            | ClauseKind::Queue(_)
-            | ClauseKind::Trace(_) => {
+            ClauseKind::Trace(expr) => self.exec_trace(expr),
+            ClauseKind::Numeric(_) | ClauseKind::Push(_) | ClauseKind::Queue(_) => {
                 // Other clause types not yet implemented
                 Ok(ExecSignal::Normal)
             }
@@ -347,6 +484,73 @@ impl<'a> Evaluator<'a> {
             }
             ExecSignal::Normal
         }
+    }
+
+    // ── TRACE execution ────────────────────────────────────────────
+
+    /// Execute a TRACE instruction: evaluate setting, update trace state.
+    fn exec_trace(&mut self, expr: &Expr) -> RexxResult<ExecSignal> {
+        let val = self.eval_expr(expr)?;
+        if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+            return Ok(ExecSignal::Normal);
+        }
+        let s = val.as_str().to_string();
+
+        // "?" alone toggles interactive mode
+        if s.trim() == "?" {
+            self.trace_setting.interactive = !self.trace_setting.interactive;
+            return Ok(ExecSignal::Normal);
+        }
+
+        let new_setting = TraceSetting::parse(&s).ok_or_else(|| {
+            RexxDiagnostic::new(RexxError::InvalidTrace)
+                .with_detail(format!("invalid trace setting '{s}'"))
+        })?;
+        self.trace_setting = new_setting;
+        Ok(ExecSignal::Normal)
+    }
+
+    /// Print a trace source line: "     3 *-* say 'hello'" to stderr.
+    #[allow(clippy::unused_self)]
+    fn trace_clause(&self, clause: &Clause) {
+        let line_num = clause.loc.line;
+        let source = clause.loc.source_line.as_deref().unwrap_or("(unknown)");
+        eprintln!("{line_num:>6} *-* {source}");
+    }
+
+    /// Print a trace tag line: "       >>> \"value\"" to stderr.
+    #[allow(clippy::unused_self)]
+    fn trace_tag(&self, tag: &str, value: &str) {
+        eprintln!("       >{tag}> \"{value}\"");
+    }
+
+    /// Conditionally trace an intermediate value (only at Intermediates level or above).
+    fn trace_intermediates(&self, tag: &str, value: &str) {
+        if self.trace_setting.level >= TraceLevel::Intermediates {
+            self.trace_tag(tag, value);
+        }
+    }
+
+    /// Handle interactive pause: read stdin lines and execute via INTERPRET.
+    fn trace_interactive_pause(&mut self) -> RexxResult<()> {
+        if !self.trace_setting.interactive {
+            return Ok(());
+        }
+        loop {
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() || line.trim().is_empty() {
+                break;
+            }
+            // Execute the input as REXX via the existing interpret machinery
+            let source = line.trim().to_string();
+            let mut lexer = Lexer::new(&source);
+            let tokens = lexer.tokenize()?;
+            let mut parser = Parser::new(tokens);
+            let program = parser.parse()?;
+            let labels = HashMap::new();
+            self.exec_interpret_body(&program.clauses, &labels)?;
+        }
+        Ok(())
     }
 
     // ── INTERPRET execution ────────────────────────────────────────
@@ -474,6 +678,28 @@ impl<'a> Evaluator<'a> {
             if let Some(signal) = self.pending_exit.take_signal() {
                 return Ok(signal);
             }
+        }
+
+        // CALL TRACE — handle before normal dispatch
+        if name.eq_ignore_ascii_case("TRACE") {
+            let old = self.trace_setting.to_string();
+            if args.len() == 1 {
+                let s = args[0].as_str().to_string();
+                if s.trim() == "?" {
+                    self.trace_setting.interactive = !self.trace_setting.interactive;
+                } else {
+                    let new_setting = TraceSetting::parse(&s).ok_or_else(|| {
+                        RexxDiagnostic::new(RexxError::InvalidTrace)
+                            .with_detail(format!("invalid trace setting '{s}'"))
+                    })?;
+                    self.trace_setting = new_setting;
+                }
+            } else if !args.is_empty() {
+                return Err(RexxDiagnostic::new(RexxError::IncorrectCall)
+                    .with_detail("TRACE expects 0 or 1 arguments"));
+            }
+            self.env.set("RESULT", RexxValue::new(old));
+            return Ok(ExecSignal::Normal);
         }
 
         // Resolution order: 1) internal labels, 2) built-in functions, 3) error
@@ -1156,10 +1382,19 @@ impl<'a> Evaluator<'a> {
             .join(".")
     }
 
+    #[allow(clippy::too_many_lines)]
     fn eval_expr(&mut self, expr: &Expr) -> RexxResult<RexxValue> {
         match expr {
-            Expr::StringLit(s) => Ok(RexxValue::new(s.clone())),
-            Expr::Number(n) => Ok(RexxValue::new(n.clone())),
+            Expr::StringLit(s) => {
+                let val = RexxValue::new(s.clone());
+                self.trace_intermediates("L", val.as_str());
+                Ok(val)
+            }
+            Expr::Number(n) => {
+                let val = RexxValue::new(n.clone());
+                self.trace_intermediates("L", val.as_str());
+                Ok(val)
+            }
             Expr::Symbol(name) => {
                 if !self.env.is_set(name)
                     && let Some(label) = self.traps.get(&Condition::NoValue).cloned()
@@ -1175,7 +1410,9 @@ impl<'a> Evaluator<'a> {
                     self.traps.remove(&Condition::NoValue);
                     self.pending_signal = Some(label);
                 }
-                Ok(self.env.get(name))
+                let val = self.env.get(name);
+                self.trace_intermediates("V", val.as_str());
+                Ok(val)
             }
             Expr::Compound { stem, tail } => {
                 let resolved = self.resolve_tail(tail);
@@ -1192,7 +1429,9 @@ impl<'a> Evaluator<'a> {
                     self.traps.remove(&Condition::NoValue);
                     self.pending_signal = Some(label);
                 }
-                Ok(self.env.get_compound(stem, &resolved))
+                let val = self.env.get_compound(stem, &resolved);
+                self.trace_intermediates("C", val.as_str());
+                Ok(val)
             }
             Expr::Paren(inner) => self.eval_expr(inner),
             Expr::UnaryOp { op, operand } => {
@@ -1200,7 +1439,9 @@ impl<'a> Evaluator<'a> {
                 if self.pending_signal.is_some() {
                     return Ok(val);
                 }
-                self.eval_unary(*op, &val)
+                let result = self.eval_unary(*op, &val)?;
+                self.trace_intermediates("P", result.as_str());
+                Ok(result)
             }
             Expr::BinOp { left, op, right } => {
                 let lval = self.eval_expr(left)?;
@@ -1211,7 +1452,9 @@ impl<'a> Evaluator<'a> {
                 if self.pending_signal.is_some() {
                     return Ok(rval);
                 }
-                self.eval_binop(*op, &lval, &rval)
+                let result = self.eval_binop(*op, &lval, &rval)?;
+                self.trace_intermediates("O", result.as_str());
+                Ok(result)
             }
             Expr::FunctionCall { name, args } => {
                 let mut evaluated_args = Vec::with_capacity(args.len());
@@ -1221,11 +1464,35 @@ impl<'a> Evaluator<'a> {
                         return Ok(RexxValue::new(""));
                     }
                 }
+                // TRACE() BIF — needs evaluator state, handle before normal dispatch
+                if name.eq_ignore_ascii_case("TRACE") {
+                    let old = self.trace_setting.to_string();
+                    if evaluated_args.len() == 1 {
+                        let s = evaluated_args[0].as_str().to_string();
+                        if s.trim() == "?" {
+                            self.trace_setting.interactive = !self.trace_setting.interactive;
+                        } else {
+                            let new_setting = TraceSetting::parse(&s).ok_or_else(|| {
+                                RexxDiagnostic::new(RexxError::InvalidTrace)
+                                    .with_detail(format!("invalid trace setting '{s}'"))
+                            })?;
+                            self.trace_setting = new_setting;
+                        }
+                    } else if !evaluated_args.is_empty() {
+                        return Err(RexxDiagnostic::new(RexxError::IncorrectCall)
+                            .with_detail("TRACE function expects 0 or 1 arguments"));
+                    }
+                    return Ok(RexxValue::new(old));
+                }
+
                 // Resolution order: 1) internal labels, 2) built-in functions, 3) error
                 if self.labels.contains_key(name.as_str()) {
                     let signal = self.call_routine(name, evaluated_args)?;
                     match signal {
-                        ExecSignal::Return(Some(val)) => Ok(val),
+                        ExecSignal::Return(Some(val)) => {
+                            self.trace_intermediates("F", val.as_str());
+                            Ok(val)
+                        }
                         ExecSignal::Return(None) | ExecSignal::Normal => {
                             Err(RexxDiagnostic::new(RexxError::NoReturnData)
                                 .with_detail(format!("function '{name}' did not return data")))
@@ -1246,7 +1513,9 @@ impl<'a> Evaluator<'a> {
                 } else if let Some(result) =
                     crate::builtins::call_builtin(name, &evaluated_args, &self.settings, self.env)
                 {
-                    result
+                    let val = result?;
+                    self.trace_intermediates("F", val.as_str());
+                    Ok(val)
                 } else {
                     Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
                         .with_detail(format!("routine '{name}' not found")))

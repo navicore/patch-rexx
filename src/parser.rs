@@ -290,6 +290,11 @@ impl Parser {
                 return self.parse_interpret();
             }
 
+            // TRACE instruction
+            if Self::check_keyword(name, "TRACE") {
+                return self.parse_trace();
+            }
+
             // ADDRESS instruction
             if Self::check_keyword(name, "ADDRESS") {
                 return self.parse_address();
@@ -1129,6 +1134,23 @@ impl Parser {
                 .at(self.loc())
                 .with_detail("expected condition name"))
         }
+    }
+
+    // ── TRACE parsing ──────────────────────────────────────────────────
+
+    /// Parse: TRACE [setting]
+    fn parse_trace(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume TRACE
+        let expr = if self.is_terminator() {
+            Expr::StringLit("N".to_string())
+        } else {
+            self.parse_expression()?
+        };
+        Ok(Clause {
+            kind: ClauseKind::Trace(expr),
+            loc,
+        })
     }
 
     // ── INTERPRET parsing ─────────────────────────────────────────────
