@@ -8,5 +8,6 @@ mod hints;
 mod hover;
 mod server;
 mod symbols;
+mod util;
 
 pub use server::run_server;

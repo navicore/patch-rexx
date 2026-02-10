@@ -4,6 +4,7 @@ use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Posi
 
 use super::analysis::DocumentAnalysis;
 use super::bif_docs;
+use super::util::word_at_position;
 
 static KEYWORD_DOCS: &[(&str, &str)] = &[
     ("SAY", "Writes a string to the default output stream."),
@@ -141,36 +142,4 @@ pub fn hover_info(analysis: &DocumentAnalysis, position: Position) -> Option<Hov
     }
 
     None
-}
-
-fn word_at_position(analysis: &DocumentAnalysis, position: Position) -> Option<String> {
-    let line_idx = position.line as usize;
-    let col = position.character as usize;
-    let line = analysis.source_lines.get(line_idx)?;
-
-    if col >= line.len() {
-        return None;
-    }
-
-    let chars: Vec<char> = line.chars().collect();
-
-    let mut start = col;
-    while start > 0 && is_rexx_word_char(chars[start - 1]) {
-        start -= 1;
-    }
-
-    let mut end = col;
-    while end < chars.len() && is_rexx_word_char(chars[end]) {
-        end += 1;
-    }
-
-    if start == end {
-        return None;
-    }
-
-    Some(chars[start..end].iter().collect())
-}
-
-fn is_rexx_word_char(ch: char) -> bool {
-    ch.is_alphanumeric() || ch == '_' || ch == '.' || ch == '!' || ch == '?' || ch == '@'
 }

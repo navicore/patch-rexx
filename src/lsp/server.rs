@@ -76,7 +76,7 @@ impl LanguageServer for RexxLanguageServer {
 
     async fn initialized(&self, _: InitializedParams) {
         self.client
-            .log_message(MessageType::INFO, "patch-rexx LSP initialized")
+            .log_message(MessageType::INFO, "rexx LSP initialized")
             .await;
     }
 

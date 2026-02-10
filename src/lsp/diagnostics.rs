@@ -13,11 +13,7 @@ pub fn to_lsp_diagnostic(diag: &RexxDiagnostic) -> Diagnostic {
         .as_ref()
         .map_or(0, |loc| loc.col.saturating_sub(1));
 
-    let end_col = diag
-        .location
-        .as_ref()
-        .and_then(|loc| loc.source_line.as_ref().map(String::len))
-        .unwrap_or(col + 1);
+    let end_col = col + 1;
 
     let message = if let Some(ref detail) = diag.detail {
         format!("{}: {detail}", diag.error.message())
@@ -40,7 +36,7 @@ pub fn to_lsp_diagnostic(diag: &RexxDiagnostic) -> Diagnostic {
         code: Some(NumberOrString::Number(
             i32::from(diag.error.number() as u16),
         )),
-        source: Some("patch-rexx".to_string()),
+        source: Some("rexx".to_string()),
         message,
         ..Diagnostic::default()
     }

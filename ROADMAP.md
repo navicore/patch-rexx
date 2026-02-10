@@ -194,6 +194,41 @@ Goal: extensibility.
 - [ ] Performance: profile and optimize hot paths (arithmetic, string ops, PARSE)
 - [ ] Consider RexxLA test suite for validation
 
+## Phase 13 — Examples Directory
+
+Goal: a rich `examples/` directory showcasing REXX's strengths and idioms.
+
+- [ ] Classic demos: hello world, FizzBuzz, factorial, Fibonacci
+- [ ] String processing: PARSE templates, word manipulation, transliteration
+- [ ] Numeric: arbitrary-precision arithmetic, FORMAT, currency rounding
+- [ ] Control flow: DO loop variants, SELECT, SIGNAL ON error handling
+- [ ] Subroutines: PROCEDURE EXPOSE, recursive routines, function-style calls
+- [ ] INTERPRET: dynamic code generation, calculator, mini-DSL
+- [ ] ADDRESS: shell scripting, pipeline orchestration, build automation
+- [ ] TRACE: annotated examples showing each trace setting
+- [ ] Real-world scripts: log parser, CSV processor, file renamer, simple HTTP client
+- [ ] Each example includes a header comment explaining what it demonstrates
+
+Milestone: newcomers can learn REXX by reading and running the examples directory.
+
+## Phase 14 — rexxlings (separate repo)
+
+Goal: an interactive REXX course modeled after [rustlings](https://github.com/rust-lang/rustlings).
+
+New repository: `rexxlings`
+
+- [ ] CLI runner (`rexxlings` binary) that watches exercise files and re-runs on save
+- [ ] Progressive exercises organized by topic (strings, control flow, PARSE, BIFs, etc.)
+- [ ] Each exercise is a `.rex` file with a failing test or `TODO` comment to fix
+- [ ] Hint system: `rexxlings hint <exercise>` shows a nudge without the answer
+- [ ] Progress tracking: completed exercises marked, overall progress displayed
+- [ ] Exercises cover REXX-specific concepts not found in other languages (PARSE templates, stem variables, INTERPRET, SIGNAL ON, TRACE)
+- [ ] Introductory exercises assume no REXX background
+- [ ] Advanced exercises cover idiomatic patterns and real-world scripting
+- [ ] Uses `rexx` binary from patch-rexx as the interpreter
+
+Milestone: `rexxlings` is a standalone learning tool that teaches REXX interactively.
+
 ## Design Principles
 
 1. **Correct first.** Match ANSI REXX behavior exactly. When the spec is ambiguous, follow IBM's z/OS REXX or Regina behavior.

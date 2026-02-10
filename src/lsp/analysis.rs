@@ -117,35 +117,36 @@ impl AstCollector {
     }
 
     fn walk_clause(&mut self, clause: &Clause) {
+        let loc = &clause.loc;
         match &clause.kind {
             ClauseKind::Label(name) => {
                 self.labels.push(LabelInfo {
                     name: name.clone(),
-                    loc: clause.loc.clone(),
+                    loc: loc.clone(),
                 });
             }
             ClauseKind::Assignment { target, expr } => {
-                self.walk_assignment(target, &clause.loc);
-                self.walk_expr(expr);
+                self.walk_assignment(target, loc);
+                self.walk_expr(expr, loc);
             }
-            ClauseKind::Say(expr) => self.walk_expr(expr),
+            ClauseKind::Say(expr) => self.walk_expr(expr, loc),
             ClauseKind::Call { name, args } => {
                 self.calls.push(CallInfo {
                     name: name.clone(),
-                    loc: clause.loc.clone(),
+                    loc: loc.clone(),
                     arg_count: args.len(),
                 });
                 for arg in args {
-                    self.walk_expr(arg);
+                    self.walk_expr(arg, loc);
                 }
             }
-            ClauseKind::Do(block) => self.walk_do_block(block),
+            ClauseKind::Do(block) => self.walk_do_block(block, loc),
             ClauseKind::If {
                 condition,
                 then_clause,
                 else_clause,
             } => {
-                self.walk_expr(condition);
+                self.walk_expr(condition, loc);
                 self.walk_clause(then_clause);
                 if let Some(ec) = else_clause {
                     self.walk_clause(ec);
@@ -156,7 +157,7 @@ impl AstCollector {
                 otherwise,
             } => {
                 for (cond, body) in when_clauses {
-                    self.walk_expr(cond);
+                    self.walk_expr(cond, loc);
                     self.walk_clauses(body);
                 }
                 if let Some(body) = otherwise {
@@ -165,23 +166,23 @@ impl AstCollector {
             }
             ClauseKind::Return(expr) | ClauseKind::Exit(expr) => {
                 if let Some(e) = expr {
-                    self.walk_expr(e);
+                    self.walk_expr(e, loc);
                 }
             }
             ClauseKind::Parse { template, .. }
             | ClauseKind::Arg(template)
             | ClauseKind::Pull(Some(template)) => {
-                self.collect_template_vars(template, &clause.loc);
+                self.collect_template_vars(template, loc);
             }
             ClauseKind::Command(expr)
             | ClauseKind::Trace(expr)
             | ClauseKind::Interpret(expr)
             | ClauseKind::Push(Some(expr))
             | ClauseKind::Queue(Some(expr)) => {
-                self.walk_expr(expr);
+                self.walk_expr(expr, loc);
             }
             ClauseKind::Numeric(crate::ast::NumericSetting::Digits(Some(e))) => {
-                self.walk_expr(e);
+                self.walk_expr(e, loc);
             }
             _ => {}
         }
@@ -219,17 +220,17 @@ impl AstCollector {
         }
     }
 
-    fn walk_do_block(&mut self, block: &DoBlock) {
+    fn walk_do_block(&mut self, block: &DoBlock, ctx_loc: &SourceLoc) {
         match &block.kind {
             DoKind::Count(expr) | DoKind::While(expr) | DoKind::Until(expr) => {
-                self.walk_expr(expr);
+                self.walk_expr(expr, ctx_loc);
             }
             DoKind::Controlled(ctrl) => {
                 self.assignments.push(VariableInfo {
                     name: ctrl.var.clone(),
-                    loc: SourceLoc::new(0, 0),
+                    loc: ctx_loc.clone(),
                 });
-                self.walk_expr(&ctrl.start);
+                self.walk_expr(&ctrl.start, ctx_loc);
                 for e in [
                     &ctrl.to,
                     &ctrl.by,
@@ -240,7 +241,7 @@ impl AstCollector {
                 .into_iter()
                 .flatten()
                 {
-                    self.walk_expr(e);
+                    self.walk_expr(e, ctx_loc);
                 }
             }
             DoKind::Simple | DoKind::Forever => {}
@@ -248,39 +249,39 @@ impl AstCollector {
         self.walk_clauses(&block.body);
     }
 
-    fn walk_expr(&mut self, expr: &Expr) {
+    fn walk_expr(&mut self, expr: &Expr, ctx_loc: &SourceLoc) {
         match expr {
             Expr::Symbol(name) => {
                 self.references.push(VariableInfo {
                     name: name.clone(),
-                    loc: SourceLoc::new(0, 0),
+                    loc: ctx_loc.clone(),
                 });
             }
             Expr::Compound { stem, .. } => {
                 self.references.push(VariableInfo {
                     name: stem.clone(),
-                    loc: SourceLoc::new(0, 0),
+                    loc: ctx_loc.clone(),
                 });
             }
             Expr::FunctionCall { name, args } => {
                 self.calls.push(CallInfo {
                     name: name.clone(),
-                    loc: SourceLoc::new(0, 0),
+                    loc: ctx_loc.clone(),
                     arg_count: args.len(),
                 });
                 for arg in args {
-                    self.walk_expr(arg);
+                    self.walk_expr(arg, ctx_loc);
                 }
             }
             Expr::BinOp { left, right, .. } => {
-                self.walk_expr(left);
-                self.walk_expr(right);
+                self.walk_expr(left, ctx_loc);
+                self.walk_expr(right, ctx_loc);
             }
             Expr::UnaryOp { operand, .. } => {
-                self.walk_expr(operand);
+                self.walk_expr(operand, ctx_loc);
             }
             Expr::Paren(inner) => {
-                self.walk_expr(inner);
+                self.walk_expr(inner, ctx_loc);
             }
             Expr::StringLit(_) | Expr::Number(_) => {}
         }
@@ -309,12 +310,23 @@ fn detect_subroutines(
                 }
             }
 
-            let end_line = labels
+            // Find the end line: first RETURN/EXIT after this label,
+            // or fall back to the line before the next label, or EOF.
+            let next_label_line = labels
                 .iter()
                 .filter(|l| l.loc.line > clause.loc.line)
                 .map(|l| l.loc.line.saturating_sub(1))
                 .min()
                 .unwrap_or(total_lines);
+
+            let end_line = clauses
+                .iter()
+                .skip(i + 1)
+                .take_while(|c| !matches!(&c.kind, ClauseKind::Label(_)))
+                .filter(|c| matches!(&c.kind, ClauseKind::Return(_) | ClauseKind::Exit(_)))
+                .map(|c| c.loc.line)
+                .next()
+                .unwrap_or(next_label_line);
 
             subroutines.push(SubroutineInfo {
                 name: name.clone(),

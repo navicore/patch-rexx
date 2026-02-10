@@ -2,7 +2,7 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 
 fn run_rexx(expr: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_patch-rexx"))
+    let output = Command::new(env!("CARGO_BIN_EXE_rexx"))
         .args(["-e", expr])
         .output()
         .expect("failed to run patch-rexx");
@@ -18,7 +18,7 @@ fn run_rexx(expr: &str) -> String {
 }
 
 fn run_rexx_fail(expr: &str) -> String {
-    let output = Command::new(env!("CARGO_BIN_EXE_patch-rexx"))
+    let output = Command::new(env!("CARGO_BIN_EXE_rexx"))
         .args(["-e", expr])
         .output()
         .expect("failed to run patch-rexx");
@@ -33,7 +33,7 @@ fn run_rexx_fail(expr: &str) -> String {
 }
 
 fn run_rexx_with_stdin(expr: &str, stdin_data: &str) -> String {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_patch-rexx"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_rexx"))
         .args(["-e", expr])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
