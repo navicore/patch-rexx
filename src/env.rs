@@ -5,6 +5,7 @@
 //! bringing variables into scope.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use crate::value::RexxValue;
 
@@ -28,6 +29,8 @@ pub struct Environment {
     address_default: String,
     /// Previous ADDRESS environment (initially "SYSTEM").
     address_previous: String,
+    /// Path to the currently executing source file (for external function resolution).
+    source_path: Option<PathBuf>,
 }
 
 /// A single variable scope.
@@ -58,6 +61,7 @@ impl Environment {
             condition_info: None,
             address_default: "SYSTEM".to_string(),
             address_previous: "SYSTEM".to_string(),
+            source_path: None,
         }
     }
 
@@ -194,6 +198,21 @@ impl Environment {
     /// Swap default ↔ previous ADDRESS environment.
     pub fn swap_address(&mut self) {
         std::mem::swap(&mut self.address_default, &mut self.address_previous);
+    }
+
+    /// Set the source file path (for external function resolution and PARSE SOURCE).
+    pub fn set_source_path(&mut self, path: PathBuf) {
+        self.source_path = Some(path);
+    }
+
+    /// Get the source file path.
+    pub fn source_path(&self) -> Option<&Path> {
+        self.source_path.as_deref()
+    }
+
+    /// Get the directory containing the source file.
+    pub fn source_dir(&self) -> Option<&Path> {
+        self.source_path.as_deref().and_then(Path::parent)
     }
 
     /// Set condition info (called when a trap fires).
