@@ -352,12 +352,12 @@ fn trace_instruction_change_midstream() {
 
 #[test]
 fn trace_compound_via_symbol() {
-    // Compound variables like a.1 are accessed via Expr::Symbol in expression position,
-    // so they show >V> tag (variable lookup) at intermediates level.
+    // Compound variables like a.1 are now correctly parsed as Expr::Compound,
+    // so they show >C> tag (compound lookup) at intermediates level.
     let (_stdout, stderr) = run_rexx_stderr("trace i; a.1 = 'hi'; say a.1");
     assert!(
-        stderr.contains(">V>"),
-        "compound via symbol should show >V>, got: {stderr}"
+        stderr.contains(">C>"),
+        "compound via symbol should show >C>, got: {stderr}"
     );
 }
 

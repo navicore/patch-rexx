@@ -1635,6 +1635,19 @@ impl Parser {
                 if matches!(self.peek_kind(), TokenKind::LeftParen) && !self.peek().space_before {
                     return self.parse_function_call(&name);
                 }
+                // Compound variable: stem.tail
+                if name.contains('.') {
+                    let parts: Vec<&str> = name.splitn(2, '.').collect();
+                    let stem = parts[0].to_uppercase();
+                    if stem.is_empty() {
+                        return Err(RexxDiagnostic::new(RexxError::InvalidExpression)
+                            .at(self.loc())
+                            .with_detail("compound variable stem cannot be empty"));
+                    }
+                    let tail_str = parts[1];
+                    let tail = parse_tail_elements(tail_str);
+                    return Ok(Expr::Compound { stem, tail });
+                }
                 Ok(Expr::Symbol(name.to_uppercase()))
             }
             TokenKind::LeftParen => {
@@ -1684,7 +1697,7 @@ fn parse_tail_elements(tail: &str) -> Vec<crate::ast::TailElement> {
     use crate::ast::TailElement;
     tail.split('.')
         .map(|part| {
-            if part.is_empty() || part.chars().all(|c| c.is_ascii_digit()) {
+            if part.is_empty() || part.starts_with(|c: char| c.is_ascii_digit()) {
                 TailElement::Const(part.to_uppercase())
             } else {
                 TailElement::Var(part.to_uppercase())
