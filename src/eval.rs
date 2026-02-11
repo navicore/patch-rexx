@@ -359,7 +359,11 @@ impl<'a> Evaluator<'a> {
                     }
                     AssignTarget::Stem { stem, tail } => {
                         let resolved_tail = self.resolve_tail(tail);
-                        self.env.set_compound(stem, &resolved_tail, val);
+                        if resolved_tail.is_empty() {
+                            self.env.set_stem_default(stem, val);
+                        } else {
+                            self.env.set_compound(stem, &resolved_tail, val);
+                        }
                     }
                 }
                 Ok(ExecSignal::Normal)

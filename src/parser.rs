@@ -1635,6 +1635,14 @@ impl Parser {
                 if matches!(self.peek_kind(), TokenKind::LeftParen) && !self.peek().space_before {
                     return self.parse_function_call(&name);
                 }
+                // Compound variable: stem.tail
+                if name.contains('.') {
+                    let parts: Vec<&str> = name.splitn(2, '.').collect();
+                    let stem = parts[0].to_uppercase();
+                    let tail_str = parts[1];
+                    let tail = parse_tail_elements(tail_str);
+                    return Ok(Expr::Compound { stem, tail });
+                }
                 Ok(Expr::Symbol(name.to_uppercase()))
             }
             TokenKind::LeftParen => {
