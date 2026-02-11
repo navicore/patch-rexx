@@ -5,15 +5,15 @@
 //! against an `Environment`.
 
 use bigdecimal::{BigDecimal, Zero};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
 use crate::ast::{
     AddressAction, AssignTarget, BinOp, Clause, ClauseKind, Condition, ControlledLoop, DoBlock,
-    DoKind, Expr, ParseSource, ParseTemplate, Program, SignalAction, TailElement, TemplateElement,
-    UnaryOp,
+    DoKind, Expr, NumericFormSetting, NumericSetting, ParseSource, ParseTemplate, Program,
+    SignalAction, TailElement, TemplateElement, UnaryOp,
 };
 use crate::env::Environment;
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
@@ -181,6 +181,8 @@ pub struct Evaluator<'a> {
     external_depth: usize,
     /// Current TRACE setting (level + interactive flag).
     trace_setting: TraceSetting,
+    /// External data queue for PUSH/QUEUE/PULL.
+    queue: VecDeque<String>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -198,6 +200,7 @@ impl<'a> Evaluator<'a> {
             interpret_depth: 0,
             external_depth: 0,
             trace_setting: TraceSetting::default(),
+            queue: VecDeque::new(),
         }
     }
 
@@ -414,7 +417,7 @@ impl<'a> Evaluator<'a> {
                 template,
             } => self.exec_parse(*upper, source, template),
             ClauseKind::Pull(template_opt) => {
-                let raw = self.read_stdin_line()?;
+                let raw = self.pull_from_queue_or_stdin()?;
                 let text = raw.to_uppercase();
                 if let Some(template) = template_opt {
                     self.apply_template(&text, template)?;
@@ -424,10 +427,9 @@ impl<'a> Evaluator<'a> {
             ClauseKind::Interpret(expr) => self.exec_interpret(expr),
             ClauseKind::Address(action) => self.exec_address(action),
             ClauseKind::Trace(expr) => self.exec_trace(expr),
-            ClauseKind::Numeric(_) | ClauseKind::Push(_) | ClauseKind::Queue(_) => {
-                // Other clause types not yet implemented
-                Ok(ExecSignal::Normal)
-            }
+            ClauseKind::Numeric(setting) => self.exec_numeric(setting),
+            ClauseKind::Push(expr) => self.exec_push(expr.as_ref()),
+            ClauseKind::Queue(expr) => self.exec_queue(expr.as_ref()),
         }
     }
 
@@ -803,7 +805,7 @@ impl<'a> Evaluator<'a> {
                 ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(ExecSignal::Normal),
             }
         } else if let Some(result) =
-            crate::builtins::call_builtin(name, &args, &self.settings, self.env)
+            crate::builtins::call_builtin(name, &args, &self.settings, self.env, self.queue.len())
         {
             let val = result?;
             self.env.set("RESULT", val);
@@ -900,7 +902,8 @@ impl<'a> Evaluator<'a> {
             let raw = match source {
                 ParseSource::Var(name) => self.env.get(name).as_str().to_string(),
                 ParseSource::Value(expr) => self.eval_expr(expr)?.as_str().to_string(),
-                ParseSource::Pull | ParseSource::LineIn => self.read_stdin_line()?,
+                ParseSource::Pull => self.pull_from_queue_or_stdin()?,
+                ParseSource::LineIn => self.read_stdin_line()?,
                 ParseSource::Source => {
                     let filename = self
                         .env
@@ -1098,6 +1101,129 @@ impl<'a> Evaluator<'a> {
         }
         result.push(ParseTemplate { elements: current });
         result
+    }
+
+    // ── NUMERIC execution ─────────────────────────────────────────
+
+    /// Execute a NUMERIC instruction: update self.settings.
+    fn exec_numeric(&mut self, setting: &NumericSetting) -> RexxResult<ExecSignal> {
+        match setting {
+            NumericSetting::Digits(expr) => {
+                let digits = if let Some(e) = expr {
+                    let val = self.eval_expr(e)?;
+                    if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+                        return Ok(ExecSignal::Normal);
+                    }
+                    let n = self.to_integer(&val)?;
+                    if n < 1 {
+                        return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                            .with_detail("NUMERIC DIGITS value must be positive"));
+                    }
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    {
+                        n as u32
+                    }
+                } else {
+                    9 // default
+                };
+                self.settings.digits = digits;
+            }
+            NumericSetting::Form(form_setting) => {
+                let form = match form_setting {
+                    NumericFormSetting::Scientific => crate::value::NumericForm::Scientific,
+                    NumericFormSetting::Engineering => crate::value::NumericForm::Engineering,
+                    NumericFormSetting::Value(expr) => {
+                        let val = self.eval_expr(expr)?;
+                        if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+                            return Ok(ExecSignal::Normal);
+                        }
+                        let s = val.as_str().to_uppercase();
+                        match s.as_str() {
+                            "SCIENTIFIC" => crate::value::NumericForm::Scientific,
+                            "ENGINEERING" => crate::value::NumericForm::Engineering,
+                            _ => {
+                                return Err(RexxDiagnostic::new(RexxError::InvalidSubKeyword)
+                                    .with_detail(format!(
+                                        "NUMERIC FORM value must be SCIENTIFIC or ENGINEERING; got '{s}'"
+                                    )));
+                            }
+                        }
+                    }
+                };
+                self.settings.form = form;
+            }
+            NumericSetting::Fuzz(expr) => {
+                let fuzz = if let Some(e) = expr {
+                    let val = self.eval_expr(e)?;
+                    if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+                        return Ok(ExecSignal::Normal);
+                    }
+                    let n = self.to_integer(&val)?;
+                    if n < 0 {
+                        return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                            .with_detail("NUMERIC FUZZ value must not be negative"));
+                    }
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    {
+                        n as u32
+                    }
+                } else {
+                    0 // default
+                };
+                if fuzz >= self.settings.digits {
+                    return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                        .with_detail("NUMERIC FUZZ must be less than NUMERIC DIGITS"));
+                }
+                self.settings.fuzz = fuzz;
+            }
+        }
+        Ok(ExecSignal::Normal)
+    }
+
+    // ── PUSH / QUEUE / PULL execution ────────────────────────────────
+
+    /// Execute PUSH: evaluate expr, add to front of queue (LIFO).
+    fn exec_push(&mut self, expr: Option<&Expr>) -> RexxResult<ExecSignal> {
+        let val = if let Some(e) = expr {
+            let v = self.eval_expr(e)?;
+            if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+                return Ok(ExecSignal::Normal);
+            }
+            v.as_str().to_string()
+        } else {
+            String::new()
+        };
+        self.queue.push_front(val);
+        Ok(ExecSignal::Normal)
+    }
+
+    /// Execute QUEUE: evaluate expr, add to back of queue (FIFO).
+    fn exec_queue(&mut self, expr: Option<&Expr>) -> RexxResult<ExecSignal> {
+        let val = if let Some(e) = expr {
+            let v = self.eval_expr(e)?;
+            if self.pending_exit.is_pending() || self.pending_signal.is_some() {
+                return Ok(ExecSignal::Normal);
+            }
+            v.as_str().to_string()
+        } else {
+            String::new()
+        };
+        self.queue.push_back(val);
+        Ok(ExecSignal::Normal)
+    }
+
+    /// Pull from the external data queue; if empty, read from stdin.
+    fn pull_from_queue_or_stdin(&mut self) -> RexxResult<String> {
+        if let Some(line) = self.queue.pop_front() {
+            Ok(line)
+        } else {
+            self.read_stdin_line()
+        }
+    }
+
+    /// Return the current queue length (for `QUEUED()` BIF).
+    pub fn queue_len(&self) -> usize {
+        self.queue.len()
     }
 
     /// Read one line from stdin, stripping the trailing newline.
@@ -1608,9 +1734,13 @@ impl<'a> Evaluator<'a> {
                         }
                         ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
                     }
-                } else if let Some(result) =
-                    crate::builtins::call_builtin(name, &evaluated_args, &self.settings, self.env)
-                {
+                } else if let Some(result) = crate::builtins::call_builtin(
+                    name,
+                    &evaluated_args,
+                    &self.settings,
+                    self.env,
+                    self.queue.len(),
+                ) {
                     let val = result?;
                     self.trace_intermediates("F", val.as_str());
                     Ok(val)

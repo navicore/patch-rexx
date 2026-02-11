@@ -113,6 +113,22 @@ impl Lexer {
 
             let mut token = self.next_token()?;
             token.space_before = had_space;
+
+            // Line continuation: if token is a comma and the rest of the
+            // line (ignoring whitespace/comments) is empty, this comma is a
+            // continuation marker — skip it and join with the next line.
+            if matches!(token.kind, TokenKind::Comma) && self.is_line_continuation() {
+                // Consume everything up to and including the newline
+                while let Some(ch) = self.peek() {
+                    if ch == '\n' {
+                        self.advance(); // consume the newline
+                        break;
+                    }
+                    self.advance(); // consume whitespace/comment chars before newline
+                }
+                continue;
+            }
+
             tokens.push(token);
         }
 
@@ -125,6 +141,49 @@ impl Lexer {
             loc = loc.with_source(self.lines[self.line - 1].clone());
         }
         loc
+    }
+
+    /// Check if the rest of the current line (ignoring whitespace and block
+    /// comments) is empty — i.e., the next non-blank content is a newline or EOF.
+    /// Used to detect trailing-comma line continuation.
+    fn is_line_continuation(&self) -> bool {
+        let mut i = self.pos;
+        while i < self.source.len() {
+            let ch = self.source[i];
+            match ch {
+                ' ' | '\t' | '\r' => {
+                    i += 1;
+                }
+                '\n' => return true,
+                // Block comment: skip it entirely
+                '/' if i + 1 < self.source.len() && self.source[i + 1] == '*' => {
+                    i += 2;
+                    let mut depth = 1u32;
+                    while depth > 0 && i < self.source.len() {
+                        if i + 1 < self.source.len()
+                            && self.source[i] == '/'
+                            && self.source[i + 1] == '*'
+                        {
+                            depth += 1;
+                            i += 2;
+                        } else if i + 1 < self.source.len()
+                            && self.source[i] == '*'
+                            && self.source[i + 1] == '/'
+                        {
+                            depth -= 1;
+                            i += 2;
+                        } else {
+                            i += 1;
+                        }
+                    }
+                }
+                // Line comment: rest of line is a comment → continuation
+                '-' if i + 1 < self.source.len() && self.source[i + 1] == '-' => return true,
+                _ => return false,
+            }
+        }
+        // Reached EOF — treat as continuation (no more lines, comma at end of file)
+        true
     }
 
     fn at_end(&self) -> bool {
@@ -153,9 +212,9 @@ impl Lexer {
 
     fn skip_whitespace_and_comments(&mut self) -> RexxResult<()> {
         loop {
-            // Skip whitespace (but not newlines — they can be clause terminators)
+            // Skip whitespace but NOT newlines — they are clause terminators
             while let Some(ch) = self.peek() {
-                if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+                if ch == ' ' || ch == '\t' || ch == '\r' {
                     self.advance();
                 } else {
                     break;
@@ -358,6 +417,10 @@ impl Lexer {
             ',' => {
                 self.advance();
                 Ok(Token::new(TokenKind::Comma, loc, false))
+            }
+            '\n' => {
+                self.advance();
+                Ok(Token::new(TokenKind::Eol, loc, false))
             }
             ';' => {
                 self.advance();

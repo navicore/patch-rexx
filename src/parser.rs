@@ -6,7 +6,8 @@
 
 use crate::ast::{
     AddressAction, AssignTarget, BinOp, Clause, ClauseKind, Condition, ControlledLoop, DoBlock,
-    DoKind, Expr, ParseSource, ParseTemplate, Program, SignalAction, TemplateElement, UnaryOp,
+    DoKind, Expr, NumericFormSetting, NumericSetting, ParseSource, ParseTemplate, Program,
+    SignalAction, TemplateElement, UnaryOp,
 };
 use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
 use crate::lexer::{Token, TokenKind};
@@ -293,6 +294,21 @@ impl Parser {
             // TRACE instruction
             if Self::check_keyword(name, "TRACE") {
                 return self.parse_trace();
+            }
+
+            // NUMERIC instruction
+            if Self::check_keyword(name, "NUMERIC") {
+                return self.parse_numeric();
+            }
+
+            // PUSH instruction
+            if Self::check_keyword(name, "PUSH") {
+                return self.parse_push();
+            }
+
+            // QUEUE instruction
+            if Self::check_keyword(name, "QUEUE") {
+                return self.parse_queue();
             }
 
             // ADDRESS instruction
@@ -1222,6 +1238,101 @@ impl Parser {
         Err(RexxDiagnostic::new(RexxError::ExpectedSymbol)
             .at(self.loc())
             .with_detail("expected environment name, VALUE, or end of clause after ADDRESS"))
+    }
+
+    // ── NUMERIC parsing ────────────────────────────────────────────────
+
+    /// Parse: NUMERIC DIGITS [expr] | NUMERIC FORM ... | NUMERIC FUZZ [expr]
+    fn parse_numeric(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume NUMERIC
+
+        if self.is_keyword("DIGITS") {
+            self.advance(); // consume DIGITS
+            let expr = if self.is_terminator() {
+                None
+            } else {
+                Some(self.parse_expression()?)
+            };
+            return Ok(Clause {
+                kind: ClauseKind::Numeric(NumericSetting::Digits(expr)),
+                loc,
+            });
+        }
+
+        if self.is_keyword("FORM") {
+            self.advance(); // consume FORM
+            let form = if self.is_keyword("SCIENTIFIC") {
+                self.advance();
+                NumericFormSetting::Scientific
+            } else if self.is_keyword("ENGINEERING") {
+                self.advance();
+                NumericFormSetting::Engineering
+            } else if self.is_keyword("VALUE") {
+                self.advance();
+                let expr = self.parse_expression()?;
+                NumericFormSetting::Value(expr)
+            } else if self.is_terminator() {
+                // Bare "NUMERIC FORM" defaults to SCIENTIFIC
+                NumericFormSetting::Scientific
+            } else {
+                let expr = self.parse_expression()?;
+                NumericFormSetting::Value(expr)
+            };
+            return Ok(Clause {
+                kind: ClauseKind::Numeric(NumericSetting::Form(form)),
+                loc,
+            });
+        }
+
+        if self.is_keyword("FUZZ") {
+            self.advance(); // consume FUZZ
+            let expr = if self.is_terminator() {
+                None
+            } else {
+                Some(self.parse_expression()?)
+            };
+            return Ok(Clause {
+                kind: ClauseKind::Numeric(NumericSetting::Fuzz(expr)),
+                loc,
+            });
+        }
+
+        Err(RexxDiagnostic::new(RexxError::InvalidSubKeyword)
+            .at(self.loc())
+            .with_detail("expected DIGITS, FORM, or FUZZ after NUMERIC"))
+    }
+
+    // ── PUSH / QUEUE parsing ─────────────────────────────────────────────
+
+    /// Parse: PUSH [expr]
+    fn parse_push(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume PUSH
+        let expr = if self.is_terminator() {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        Ok(Clause {
+            kind: ClauseKind::Push(expr),
+            loc,
+        })
+    }
+
+    /// Parse: QUEUE [expr]
+    fn parse_queue(&mut self) -> RexxResult<Clause> {
+        let loc = self.loc();
+        self.advance(); // consume QUEUE
+        let expr = if self.is_terminator() {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
+        Ok(Clause {
+            kind: ClauseKind::Queue(expr),
+            loc,
+        })
     }
 
     // ── expression parsing (precedence climbing) ────────────────────
