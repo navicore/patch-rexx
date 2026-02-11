@@ -6,6 +6,7 @@ pub mod builtins;
 pub mod env;
 pub mod error;
 pub mod eval;
+pub mod external;
 pub mod lexer;
 pub mod parser;
 pub mod value;

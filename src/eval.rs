@@ -7,6 +7,7 @@
 use bigdecimal::{BigDecimal, Zero};
 use std::collections::HashMap;
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 
 use crate::ast::{
@@ -176,6 +177,8 @@ pub struct Evaluator<'a> {
     pending_signal: Option<String>,
     /// Current INTERPRET nesting depth (for recursion limit).
     interpret_depth: usize,
+    /// Current external function call nesting depth (for recursion limit).
+    external_depth: usize,
     /// Current TRACE setting (level + interactive flag).
     trace_setting: TraceSetting,
 }
@@ -193,6 +196,7 @@ impl<'a> Evaluator<'a> {
             traps: HashMap::new(),
             pending_signal: None,
             interpret_depth: 0,
+            external_depth: 0,
             trace_setting: TraceSetting::default(),
         }
     }
@@ -715,6 +719,50 @@ impl<'a> Evaluator<'a> {
         result
     }
 
+    /// Try to call an external function by searching the filesystem for a `.rexx`/`.rex` file.
+    /// Returns `Ok(None)` if no external file was found, `Ok(Some(signal))` if executed.
+    fn try_call_external(
+        &mut self,
+        name: &str,
+        args: Vec<RexxValue>,
+    ) -> RexxResult<Option<ExecSignal>> {
+        // 1. Resolve external file
+        let source_dir = self.env.source_dir();
+        let Some((program, path)) = crate::external::resolve_external(name, source_dir)? else {
+            return Ok(None);
+        };
+
+        // 2. Recursion guard
+        if self.external_depth >= 100 {
+            return Err(RexxDiagnostic::new(RexxError::ResourceExhausted)
+                .with_detail("external function call recursion depth limit exceeded"));
+        }
+        self.external_depth += 1;
+
+        // 3. Push isolated scope, set args
+        self.env.push_procedure();
+        self.arg_stack.push(args);
+
+        // 4. Update source_path so nested external calls resolve relative to this file
+        let old_source_path = self.env.source_path().map(Path::to_path_buf);
+        self.env.set_source_path(path);
+
+        // 5. Build labels for external program, execute via exec_interpret_body
+        let ext_labels = Self::build_labels(&program);
+        let result = self.exec_interpret_body(&program.clauses, &ext_labels);
+
+        // 6. Restore source_path, clean up scope
+        match old_source_path {
+            Some(old) => self.env.set_source_path(old),
+            None => self.env.clear_source_path(),
+        }
+        self.arg_stack.pop();
+        self.env.pop_procedure();
+        self.external_depth -= 1;
+
+        Ok(Some(result?))
+    }
+
     fn exec_call(&mut self, name: &str, arg_exprs: &[Expr]) -> RexxResult<ExecSignal> {
         let mut args = Vec::with_capacity(arg_exprs.len());
         for expr in arg_exprs {
@@ -739,7 +787,7 @@ impl<'a> Evaluator<'a> {
             return Ok(ExecSignal::Normal);
         }
 
-        // Resolution order: 1) internal labels, 2) built-in functions, 3) error
+        // Resolution order: 1) internal labels, 2) built-in functions, 3) external, 4) error
         if self.labels.contains_key(name) {
             let signal = self.call_routine(name, args)?;
             match signal {
@@ -761,8 +809,23 @@ impl<'a> Evaluator<'a> {
             self.env.set("RESULT", val);
             Ok(ExecSignal::Normal)
         } else {
-            Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
-                .with_detail(format!("routine '{name}' not found")))
+            // Step 3: external function search
+            match self.try_call_external(name, args)? {
+                Some(signal) => match signal {
+                    ExecSignal::Return(Some(val)) => {
+                        self.env.set("RESULT", val);
+                        Ok(ExecSignal::Normal)
+                    }
+                    ExecSignal::Return(None) | ExecSignal::Normal => {
+                        self.env.drop("RESULT");
+                        Ok(ExecSignal::Normal)
+                    }
+                    ExecSignal::Exit(_) | ExecSignal::Signal(_) => Ok(signal),
+                    ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(ExecSignal::Normal),
+                },
+                None => Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
+                    .with_detail(format!("routine '{name}' not found"))),
+            }
         }
     }
 
@@ -838,7 +901,14 @@ impl<'a> Evaluator<'a> {
                 ParseSource::Var(name) => self.env.get(name).as_str().to_string(),
                 ParseSource::Value(expr) => self.eval_expr(expr)?.as_str().to_string(),
                 ParseSource::Pull | ParseSource::LineIn => self.read_stdin_line()?,
-                ParseSource::Source => "UNIX COMMAND patch-rexx".to_string(),
+                ParseSource::Source => {
+                    let filename = self
+                        .env
+                        .source_path()
+                        .and_then(|p| p.file_name())
+                        .map_or_else(|| "rexx".to_string(), |f| f.to_string_lossy().into_owned());
+                    format!("UNIX COMMAND {filename}")
+                }
                 ParseSource::Version => {
                     format!("REXX-patch-rexx {} 8 Feb 2026", env!("CARGO_PKG_VERSION"))
                 }
@@ -1513,7 +1583,7 @@ impl<'a> Evaluator<'a> {
                     return Ok(RexxValue::new(self.trace_setting.to_string()));
                 }
 
-                // Resolution order: 1) internal labels, 2) built-in functions, 3) error
+                // Resolution order: 1) internal labels, 2) built-in functions, 3) external, 4) error
                 if self.labels.contains_key(name.as_str()) {
                     let signal = self.call_routine(name, evaluated_args)?;
                     match signal {
@@ -1545,8 +1615,32 @@ impl<'a> Evaluator<'a> {
                     self.trace_intermediates("F", val.as_str());
                     Ok(val)
                 } else {
-                    Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
-                        .with_detail(format!("routine '{name}' not found")))
+                    // Step 3: external function search
+                    match self.try_call_external(name, evaluated_args)? {
+                        Some(signal) => match signal {
+                            ExecSignal::Return(Some(val)) => {
+                                self.trace_intermediates("F", val.as_str());
+                                Ok(val)
+                            }
+                            ExecSignal::Return(None) | ExecSignal::Normal => {
+                                Err(RexxDiagnostic::new(RexxError::NoReturnData)
+                                    .with_detail(format!("function '{name}' did not return data")))
+                            }
+                            ExecSignal::Exit(val) => {
+                                self.pending_exit = PendingExit::WithValue(val);
+                                Ok(RexxValue::new(""))
+                            }
+                            ExecSignal::Signal(_) => {
+                                if let ExecSignal::Signal(label) = signal {
+                                    self.pending_signal = Some(label);
+                                }
+                                Ok(RexxValue::new(""))
+                            }
+                            ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
+                        },
+                        None => Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
+                            .with_detail(format!("routine '{name}' not found"))),
+                    }
                 }
             }
         }

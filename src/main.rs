@@ -36,6 +36,8 @@ fn main() {
         match std::fs::read_to_string(path) {
             Ok(source) => {
                 let mut environment = env::Environment::new();
+                let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
+                environment.set_source_path(canonical);
                 if let Err(e) = run_line(&source, &mut environment, &cli.args) {
                     eprintln!("{e}");
                     std::process::exit(1);
