@@ -18,7 +18,8 @@ fn run_rexx(expr: &str) -> String {
 }
 
 fn run_rexx_file(source: &str) -> std::process::Output {
-    let mut tmp = tempfile::NamedTempFile::with_suffix(".rexx").expect("failed to create temp file");
+    let mut tmp =
+        tempfile::NamedTempFile::with_suffix(".rexx").expect("failed to create temp file");
     tmp.write_all(source.as_bytes()).expect("failed to write");
     tmp.flush().expect("failed to flush");
     Command::new(env!("CARGO_BIN_EXE_rexx"))
