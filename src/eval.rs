@@ -1119,6 +1119,10 @@ impl<'a> Evaluator<'a> {
                         return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
                             .with_detail("NUMERIC DIGITS value must be positive"));
                     }
+                    if n > i64::from(u32::MAX) {
+                        return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                            .with_detail("NUMERIC DIGITS value too large"));
+                    }
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     {
                         n as u32
@@ -1162,6 +1166,10 @@ impl<'a> Evaluator<'a> {
                     if n < 0 {
                         return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
                             .with_detail("NUMERIC FUZZ value must not be negative"));
+                    }
+                    if n > i64::from(u32::MAX) {
+                        return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
+                            .with_detail("NUMERIC FUZZ value too large"));
                     }
                     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
                     {

@@ -83,6 +83,36 @@ fn numeric_digits_high_precision() {
     assert_eq!(stdout(&output), "0.33333333333333333333");
 }
 
+#[test]
+fn numeric_digits_too_large() {
+    let dir = TempDir::new().unwrap();
+    write_file(&dir, "test.rexx", "numeric digits 5000000000");
+    let output = run_rexx(&dir, "test.rexx");
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("too large") || stderr(&output).contains("26"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn numeric_fuzz_too_large() {
+    let dir = TempDir::new().unwrap();
+    write_file(
+        &dir,
+        "test.rexx",
+        "numeric digits 20; numeric fuzz 5000000000",
+    );
+    let output = run_rexx(&dir, "test.rexx");
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("too large") || stderr(&output).contains("26"),
+        "stderr: {}",
+        stderr(&output)
+    );
+}
+
 // ── NUMERIC FORM ─────────────────────────────────────────────────────
 
 #[test]
