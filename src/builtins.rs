@@ -24,6 +24,7 @@ pub fn call_builtin(
     args: &[RexxValue],
     settings: &NumericSettings,
     env: &Environment,
+    queue_len: usize,
 ) -> Option<RexxResult<RexxValue>> {
     let result = match name {
         // String functions
@@ -89,6 +90,14 @@ pub fn call_builtin(
 
         // Address
         "ADDRESS" => bif_address(args, env),
+
+        // Numeric settings
+        "DIGITS" => bif_digits(args, settings),
+        "FORM" => bif_form(args, settings),
+        "FUZZ" => bif_fuzz(args, settings),
+
+        // Queue
+        "QUEUED" => bif_queued(args, queue_len),
 
         _ => return None,
     };
@@ -1659,6 +1668,34 @@ fn bif_address(args: &[RexxValue], env: &Environment) -> RexxResult<RexxValue> {
     Ok(RexxValue::new(env.address()))
 }
 
+// ── Numeric settings BIFs ───────────────────────────────────────────
+
+fn bif_digits(args: &[RexxValue], settings: &NumericSettings) -> RexxResult<RexxValue> {
+    check_args("DIGITS", args, 0, 0)?;
+    Ok(RexxValue::new(settings.digits.to_string()))
+}
+
+fn bif_form(args: &[RexxValue], settings: &NumericSettings) -> RexxResult<RexxValue> {
+    check_args("FORM", args, 0, 0)?;
+    let form_str = match settings.form {
+        crate::value::NumericForm::Scientific => "SCIENTIFIC",
+        crate::value::NumericForm::Engineering => "ENGINEERING",
+    };
+    Ok(RexxValue::new(form_str))
+}
+
+fn bif_fuzz(args: &[RexxValue], settings: &NumericSettings) -> RexxResult<RexxValue> {
+    check_args("FUZZ", args, 0, 0)?;
+    Ok(RexxValue::new(settings.fuzz.to_string()))
+}
+
+// ── Queue BIF ───────────────────────────────────────────────────────
+
+fn bif_queued(args: &[RexxValue], queue_len: usize) -> RexxResult<RexxValue> {
+    check_args("QUEUED", args, 0, 0)?;
+    Ok(RexxValue::new(queue_len.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1672,6 +1709,7 @@ mod tests {
             &[RexxValue::new("hello")],
             &NumericSettings::default(),
             &env,
+            0,
         );
         assert_eq!(result.unwrap().unwrap().as_str(), "5");
     }
@@ -1684,6 +1722,7 @@ mod tests {
             &[RexxValue::new("hello world"), RexxValue::new("7")],
             &NumericSettings::default(),
             &env,
+            0,
         );
         assert_eq!(result.unwrap().unwrap().as_str(), "world");
     }
@@ -1696,6 +1735,7 @@ mod tests {
             &[RexxValue::new("one two three")],
             &NumericSettings::default(),
             &env,
+            0,
         );
         assert_eq!(result.unwrap().unwrap().as_str(), "3");
     }
@@ -1708,6 +1748,7 @@ mod tests {
             &[RexxValue::new("-42")],
             &NumericSettings::default(),
             &env,
+            0,
         );
         assert_eq!(result.unwrap().unwrap().as_str(), "42");
     }
@@ -1720,6 +1761,7 @@ mod tests {
             &[RexxValue::new("x")],
             &NumericSettings::default(),
             &env,
+            0,
         );
         assert!(result.is_none());
     }
@@ -1727,7 +1769,7 @@ mod tests {
     #[test]
     fn test_wrong_arg_count() {
         let env = Environment::new();
-        let result = call_builtin("LENGTH", &[], &NumericSettings::default(), &env);
+        let result = call_builtin("LENGTH", &[], &NumericSettings::default(), &env, 0);
         assert!(result.unwrap().is_err());
     }
 
