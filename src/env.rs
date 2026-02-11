@@ -205,6 +205,11 @@ impl Environment {
         self.source_path = Some(path);
     }
 
+    /// Clear the source file path (restores REPL/no-file state).
+    pub fn clear_source_path(&mut self) {
+        self.source_path = None;
+    }
+
     /// Get the source file path.
     pub fn source_path(&self) -> Option<&Path> {
         self.source_path.as_deref()

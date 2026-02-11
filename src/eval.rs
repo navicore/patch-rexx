@@ -752,8 +752,9 @@ impl<'a> Evaluator<'a> {
         let result = self.exec_interpret_body(&program.clauses, &ext_labels);
 
         // 6. Restore source_path, clean up scope
-        if let Some(old) = old_source_path {
-            self.env.set_source_path(old);
+        match old_source_path {
+            Some(old) => self.env.set_source_path(old),
+            None => self.env.clear_source_path(),
         }
         self.arg_stack.pop();
         self.env.pop_procedure();

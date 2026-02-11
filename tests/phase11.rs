@@ -293,3 +293,20 @@ fn source_path_restored_after_error() {
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(stdout(&output), "OK");
 }
+
+// ── Test 18: External call from -e (no source file) ──────────────────
+
+#[test]
+fn external_from_eval_mode() {
+    // When using -e, there is no source file so source_path is None.
+    // External functions should still be found via CWD.
+    let dir = TempDir::new().unwrap();
+    write_file(&dir, "helper.rexx", "return 'FROM_CWD'");
+    let output = Command::new(env!("CARGO_BIN_EXE_rexx"))
+        .args(["-e", "say helper()"])
+        .current_dir(dir.path())
+        .output()
+        .expect("failed to run rexx");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "FROM_CWD");
+}
