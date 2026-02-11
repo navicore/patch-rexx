@@ -211,6 +211,16 @@ impl Lexer {
     }
 
     fn skip_whitespace_and_comments(&mut self) -> RexxResult<()> {
+        // Skip shebang line if at start of file
+        if self.pos == 0 && self.peek() == Some('#') && self.peek_ahead(1) == Some('!') {
+            while let Some(ch) = self.peek() {
+                if ch == '\n' {
+                    break;
+                }
+                self.advance();
+            }
+        }
+
         loop {
             // Skip whitespace but NOT newlines — they are clause terminators
             while let Some(ch) = self.peek() {
@@ -628,5 +638,14 @@ mod tests {
         assert!(matches!(&tokens[1].kind, TokenKind::StrictEq));
         assert!(matches!(&tokens[3].kind, TokenKind::NotEqual));
         assert!(matches!(&tokens[5].kind, TokenKind::StrictGt));
+    }
+
+    #[test]
+    fn shebang_line_skipped() {
+        let mut lexer = Lexer::new("#!/usr/bin/env rexx\nsay 'hello'");
+        let tokens = lexer.tokenize().unwrap();
+        assert!(matches!(&tokens[0].kind, TokenKind::Eol));
+        assert!(matches!(&tokens[1].kind, TokenKind::Symbol(s) if s == "say"));
+        assert!(matches!(&tokens[2].kind, TokenKind::StringLit(s) if s == "hello"));
     }
 }
