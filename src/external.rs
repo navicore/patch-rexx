@@ -15,7 +15,7 @@ use crate::parser::Parser;
 ///
 /// Search path (in order):
 /// 1. Directory of the calling script (`source_dir`)
-/// 2. Entries from `REXXPATH` environment variable (colon-separated)
+/// 2. Entries from `REXXPATH` environment variable (platform path separator)
 /// 3. Current working directory
 ///
 /// Candidate filenames for name `FOO`: `foo.rexx`, `foo.rex`, `FOO.rexx`, `FOO.rex`
@@ -41,10 +41,9 @@ pub fn resolve_external(
         search_dirs.push(dir.to_path_buf());
     }
     if let Ok(rexxpath) = std::env::var("REXXPATH") {
-        for entry in rexxpath.split(':') {
-            let p = PathBuf::from(entry);
-            if p.is_dir() {
-                search_dirs.push(p);
+        for entry in std::env::split_paths(&rexxpath) {
+            if entry.is_dir() {
+                search_dirs.push(entry);
             }
         }
     }

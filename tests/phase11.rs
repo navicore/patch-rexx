@@ -273,3 +273,23 @@ fn rexxpath_multiple_entries() {
     assert!(output.status.success(), "stderr: {}", stderr(&output));
     assert_eq!(stdout(&output), "LIB1 LIB2");
 }
+
+// ── Test 17: source_path restored after external error ───────────────
+
+#[test]
+fn source_path_restored_after_error() {
+    // If an external function errors, subsequent external calls from the
+    // same caller should still resolve relative to the caller's directory.
+    let dir = TempDir::new().unwrap();
+    write_file(&dir, "bad.rexx", "x = 1 +");
+    write_file(&dir, "good.rexx", "return 'OK'");
+    // Use SIGNAL ON SYNTAX to trap the error from bad(), then call good()
+    write_file(
+        &dir,
+        "main.rexx",
+        "signal on syntax; call bad; syntax: say good()",
+    );
+    let output = run_rexx_file(&dir, "main.rexx");
+    assert!(output.status.success(), "stderr: {}", stderr(&output));
+    assert_eq!(stdout(&output), "OK");
+}

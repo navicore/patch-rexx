@@ -727,9 +727,8 @@ impl<'a> Evaluator<'a> {
         args: Vec<RexxValue>,
     ) -> RexxResult<Option<ExecSignal>> {
         // 1. Resolve external file
-        let source_dir = self.env.source_dir().map(Path::to_path_buf);
-        let Some((program, path)) = crate::external::resolve_external(name, source_dir.as_deref())?
-        else {
+        let source_dir = self.env.source_dir();
+        let Some((program, path)) = crate::external::resolve_external(name, source_dir)? else {
             return Ok(None);
         };
 
