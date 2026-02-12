@@ -1,6 +1,6 @@
 [package]
 name = "patch-rexx"
-version = "0.1.0"
+version = "0.9.1"
 edition = "2024"
 authors = ["Ed Sweeney <ed@onextent.com>"]
 license = "MIT"
