@@ -5,6 +5,10 @@ edition = "2024"
 authors = ["Ed Sweeney <ed@onextent.com>"]
 license = "MIT"
 description = "A modern REXX interpreter in Rust"
+repository = "https://github.com/navicore/patch-rexx"
+readme = "README.md"
+keywords = ["rexx", "interpreter", "scripting", "language"]
+categories = ["command-line-utilities", "compilers"]
 
 [features]
 default = []
