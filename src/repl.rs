@@ -269,13 +269,7 @@ pub fn run(
         if let Some(action) = result.action {
             match action {
                 Action::Submit => {
-                    if submit(
-                        &mut input,
-                        &mut editor,
-                        &mut history,
-                        environment,
-                        run_line,
-                    ) {
+                    if submit(&mut input, &mut editor, &mut history, environment, run_line) {
                         break;
                     }
                 }
