@@ -208,6 +208,12 @@ pub fn run(
     history.load();
     let mut input = String::new();
 
+    println!(
+        "rexx {} \u{2014} interactive mode",
+        env!("CARGO_PKG_VERSION")
+    );
+    println!("Type REXX statements. Use EXIT or Ctrl-D to quit.\n");
+
     // Install a panic hook that restores the terminal
     let original_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -218,6 +224,7 @@ pub fn run(
     }));
 
     if enable_raw_mode().is_err() {
+        drop(std::panic::take_hook());
         eprintln!("rexx: cannot enable raw mode");
         return;
     }
