@@ -1,0 +1,59 @@
+#!/usr/bin/env rexx
+/* rexxfile — Build tasks for a Rust project */
+
+PARSE ARG task rest
+task = TRANSLATE(STRIP(task))
+IF task = '' THEN task = 'BUILD'
+
+SELECT
+  WHEN task = 'BUILD'   THEN CALL do_build
+  WHEN task = 'TEST'    THEN DO; CALL do_build; CALL do_test; END
+  WHEN task = 'INSTALL' THEN DO; CALL do_build; CALL do_install; END
+  WHEN task = 'CI'      THEN DO; CALL do_build; CALL do_test; CALL do_clippy; END
+  WHEN task = 'CLEAN'   THEN CALL do_clean
+  WHEN task = 'HELP'    THEN CALL do_help
+  OTHERWISE DO; SAY 'Unknown task:' task; CALL do_help; EXIT 1; END
+END
+EXIT 0
+
+do_build: PROCEDURE
+  SAY '==> Building...'
+  ADDRESS SYSTEM 'cargo build'
+  IF RC \= 0 THEN EXIT RC
+  RETURN
+
+do_test: PROCEDURE
+  SAY '==> Testing...'
+  ADDRESS SYSTEM 'cargo test'
+  IF RC \= 0 THEN EXIT RC
+  RETURN
+
+do_install: PROCEDURE
+  SAY '==> Installing...'
+  ADDRESS SYSTEM 'cargo install --path .'
+  IF RC \= 0 THEN EXIT RC
+  RETURN
+
+do_clippy: PROCEDURE
+  SAY '==> Clippy...'
+  ADDRESS SYSTEM 'cargo clippy --all-targets -- -D warnings'
+  IF RC \= 0 THEN EXIT RC
+  RETURN
+
+do_clean: PROCEDURE
+  SAY '==> Cleaning...'
+  ADDRESS SYSTEM 'cargo clean'
+  IF RC \= 0 THEN EXIT RC
+  RETURN
+
+do_help: PROCEDURE
+  SAY 'Usage: ./rexxfile <task>'
+  SAY ''
+  SAY 'Tasks:'
+  SAY '  build    Build the project (default)'
+  SAY '  test     Build and run tests'
+  SAY '  install  Build and install'
+  SAY '  ci       Build, test, and clippy'
+  SAY '  clean    Remove build artifacts'
+  SAY '  help     Show this help'
+  RETURN

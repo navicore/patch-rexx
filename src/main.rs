@@ -28,9 +28,16 @@ fn main() {
 
     if let Some(expr) = &cli.eval {
         let mut environment = env::Environment::new();
-        if let Err(e) = run_line(expr, &mut environment, &[]) {
-            eprintln!("{e}");
-            std::process::exit(1);
+        match run_line(expr, &mut environment, &[]) {
+            Ok(code) => {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
         }
     } else if let Some(path) = &cli.source {
         match std::fs::read_to_string(path) {
@@ -38,9 +45,16 @@ fn main() {
                 let mut environment = env::Environment::new();
                 let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
                 environment.set_source_path(canonical);
-                if let Err(e) = run_line(&source, &mut environment, &cli.args) {
-                    eprintln!("{e}");
-                    std::process::exit(1);
+                match run_line(&source, &mut environment, &cli.args) {
+                    Ok(code) => {
+                        if code != 0 {
+                            std::process::exit(code);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
                 }
             }
             Err(e) => {
@@ -57,7 +71,7 @@ fn run_line(
     source: &str,
     environment: &mut env::Environment,
     args: &[String],
-) -> error::RexxResult<()> {
+) -> error::RexxResult<i32> {
     let mut lex = lexer::Lexer::new(source);
     let tokens = lex.tokenize()?;
     let mut p = parser::Parser::new(tokens);
@@ -69,8 +83,24 @@ fn run_line(
     }
     let signal = evaluator.exec()?;
     match signal {
-        eval::ExecSignal::Normal | eval::ExecSignal::Exit(_) | eval::ExecSignal::Return(_) => {
-            Ok(())
+        eval::ExecSignal::Exit(Some(val)) => {
+            let d = val.to_decimal().ok_or_else(|| {
+                error::RexxDiagnostic::new(error::RexxError::BadArithmetic)
+                    .with_detail(format!("EXIT value '{}' is not a number", val.as_str()))
+            })?;
+            let rounded = d.round(0);
+            if d != rounded {
+                return Err(
+                    error::RexxDiagnostic::new(error::RexxError::InvalidWholeNumber).with_detail(
+                        format!("EXIT value '{}' is not a whole number", val.as_str()),
+                    ),
+                );
+            }
+            let code = rounded.to_string().parse::<i32>().unwrap_or(1); // overflow → nonzero exit
+            Ok(code)
+        }
+        eval::ExecSignal::Normal | eval::ExecSignal::Return(_) | eval::ExecSignal::Exit(None) => {
+            Ok(0)
         }
         eval::ExecSignal::Leave(_) | eval::ExecSignal::Iterate(_) => Err(
             error::RexxDiagnostic::new(error::RexxError::InvalidLeaveIterate)
@@ -108,8 +138,9 @@ fn run_repl() {
                 if trimmed.eq_ignore_ascii_case("exit") {
                     break;
                 }
-                if let Err(e) = run_line(trimmed, &mut environment, &[]) {
-                    eprintln!("{e}");
+                match run_line(trimmed, &mut environment, &[]) {
+                    Ok(_) => {}
+                    Err(e) => eprintln!("{e}"),
                 }
             }
             Err(
