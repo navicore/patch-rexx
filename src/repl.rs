@@ -137,8 +137,14 @@ fn render_line(prompt: &str, input: &str, cursor: usize) {
     let _ = crossterm::execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine));
 
     let _ = write!(stdout, "{prompt}{input}");
-    // Position cursor: prompt width + cursor byte offset counted as chars
-    let cursor_col = prompt.len() + input[..cursor.min(input.len())].chars().count();
+    // Position cursor: prompt width + cursor offset counted as chars.
+    // Clamp to a valid char boundary to avoid panicking on multi-byte input.
+    let byte_pos = cursor.min(input.len());
+    let safe_pos = (0..=byte_pos)
+        .rev()
+        .find(|&i| input.is_char_boundary(i))
+        .unwrap_or(0);
+    let cursor_col = prompt.len() + input[..safe_pos].chars().count();
     let col = u16::try_from(cursor_col).unwrap_or(u16::MAX);
     let _ = crossterm::execute!(stdout, MoveToColumn(col));
     let _ = stdout.flush();
@@ -174,14 +180,21 @@ fn submit(
         }
     };
 
+    if should_exit {
+        return true;
+    }
+
     input.clear();
     editor.reset();
-    enable_raw_mode().expect("failed to re-enable raw mode");
+    if enable_raw_mode().is_err() {
+        eprintln!("rexx: cannot re-enable raw mode");
+        return true;
+    }
     // Re-enter insert mode for next line
     let _ = editor.handle_key(Key::char('i'), input);
     render_line("rexx> ", input, editor.cursor());
 
-    should_exit
+    false
 }
 
 // ── Main REPL loop ───────────────────────────────────────────────────
@@ -204,7 +217,10 @@ pub fn run(
         original_hook(info);
     }));
 
-    enable_raw_mode().expect("failed to enable raw mode");
+    if enable_raw_mode().is_err() {
+        eprintln!("rexx: cannot enable raw mode");
+        return;
+    }
 
     // Start in insert mode (send synthetic 'i')
     let _ = editor.handle_key(Key::char('i'), &input);
@@ -216,9 +232,10 @@ pub fn run(
             continue;
         };
 
-        // Ctrl-D always quits
+        // Ctrl-D / Ctrl-C always quit (intercepted before vim-line,
+        // which would swallow Ctrl-C in insert mode as mode-switch)
         if key_event.modifiers.contains(KeyModifiers::CONTROL)
-            && key_event.code == CtKeyCode::Char('d')
+            && matches!(key_event.code, CtKeyCode::Char('d' | 'c'))
         {
             break;
         }
@@ -301,6 +318,8 @@ pub fn run(
     }
 
     let _ = disable_raw_mode();
+    // Remove our custom panic hook (restores the default)
+    drop(std::panic::take_hook());
     println!();
     history.save();
 }
