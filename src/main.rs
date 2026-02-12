@@ -1,5 +1,8 @@
+mod repl;
+
 use clap::Parser;
 use patch_rexx::{env, error, eval, lexer, parser, value};
+use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -62,8 +65,27 @@ fn main() {
                 std::process::exit(1);
             }
         }
-    } else {
+    } else if cli.interactive || std::io::stdin().is_terminal() {
         run_repl();
+    } else {
+        // Piped stdin — read as a script
+        let mut source = String::new();
+        if let Err(e) = std::io::stdin().read_to_string(&mut source) {
+            eprintln!("rexx: cannot read stdin: {e}");
+            std::process::exit(1);
+        }
+        let mut environment = env::Environment::new();
+        match run_line(&source, &mut environment, &cli.args) {
+            Ok(code) => {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 
@@ -114,44 +136,6 @@ fn run_line(
 }
 
 fn run_repl() {
-    println!("rexx {} — interactive mode", env!("CARGO_PKG_VERSION"));
-    println!("Type REXX statements. Use EXIT to quit.\n");
-
-    let mut rl = match rustyline::DefaultEditor::new() {
-        Ok(rl) => rl,
-        Err(e) => {
-            eprintln!("rexx: cannot initialize line editor: {e}");
-            std::process::exit(1);
-        }
-    };
-
     let mut environment = env::Environment::new();
-
-    loop {
-        match rl.readline("rexx> ") {
-            Ok(line) => {
-                let trimmed = line.trim();
-                if trimmed.is_empty() {
-                    continue;
-                }
-                let _ = rl.add_history_entry(trimmed);
-                if trimmed.eq_ignore_ascii_case("exit") {
-                    break;
-                }
-                match run_line(trimmed, &mut environment, &[]) {
-                    Ok(_) => {}
-                    Err(e) => eprintln!("{e}"),
-                }
-            }
-            Err(
-                rustyline::error::ReadlineError::Interrupted | rustyline::error::ReadlineError::Eof,
-            ) => {
-                break;
-            }
-            Err(e) => {
-                eprintln!("rexx: {e}");
-                break;
-            }
-        }
-    }
+    repl::run(&mut environment, run_line);
 }
