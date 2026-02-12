@@ -84,7 +84,19 @@ fn run_line(
     let signal = evaluator.exec()?;
     match signal {
         eval::ExecSignal::Exit(Some(val)) => {
-            let code = val.to_string().trim().parse::<i32>().unwrap_or(0);
+            let d = val.to_decimal().ok_or_else(|| {
+                error::RexxDiagnostic::new(error::RexxError::BadArithmetic)
+                    .with_detail(format!("EXIT value '{}' is not a number", val.as_str()))
+            })?;
+            let rounded = d.round(0);
+            if d != rounded {
+                return Err(
+                    error::RexxDiagnostic::new(error::RexxError::InvalidWholeNumber).with_detail(
+                        format!("EXIT value '{}' is not a whole number", val.as_str()),
+                    ),
+                );
+            }
+            let code = rounded.to_string().parse::<i32>().unwrap_or(1); // overflow → nonzero exit
             Ok(code)
         }
         eval::ExecSignal::Normal | eval::ExecSignal::Return(_) | eval::ExecSignal::Exit(None) => {

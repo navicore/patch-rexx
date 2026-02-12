@@ -81,3 +81,32 @@ fn exit_no_value_is_zero() {
 fn no_shebang_still_works() {
     assert_eq!(run_rexx("SAY 'no shebang'"), "no shebang");
 }
+
+#[test]
+fn exit_non_numeric_errors() {
+    let out = run_rexx_file("EXIT 'hello'\n");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("not a number"),
+        "expected arithmetic error, got: {stderr}"
+    );
+}
+
+#[test]
+fn exit_fractional_errors() {
+    let out = run_rexx_file("EXIT 3.14\n");
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(
+        stderr.contains("not a whole number"),
+        "expected whole number error, got: {stderr}"
+    );
+}
+
+#[test]
+fn exit_negative_code() {
+    let out = run_rexx_file("EXIT -1\n");
+    // OS may wrap negative codes, but it should not error
+    assert_ne!(out.status.code(), None);
+}
