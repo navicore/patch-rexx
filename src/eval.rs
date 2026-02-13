@@ -518,16 +518,17 @@ impl<'a> Evaluator<'a> {
         };
 
         if rc != 0
-            && let Some(label) = self.traps.get(&Condition::Error).cloned() {
-                self.env.set_condition_info(crate::env::ConditionInfoData {
-                    condition: "ERROR".to_string(),
-                    description: command.to_string(),
-                    instruction: "SIGNAL".to_string(),
-                    status: "ON".to_string(),
-                });
-                self.traps.remove(&Condition::Error);
-                return ExecSignal::Signal(label);
-            }
+            && let Some(label) = self.traps.get(&Condition::Error).cloned()
+        {
+            self.env.set_condition_info(crate::env::ConditionInfoData {
+                condition: "ERROR".to_string(),
+                description: command.to_string(),
+                instruction: "SIGNAL".to_string(),
+                status: "ON".to_string(),
+            });
+            self.traps.remove(&Condition::Error);
+            return ExecSignal::Signal(label);
+        }
         ExecSignal::Normal
     }
 
