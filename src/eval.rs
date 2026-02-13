@@ -183,6 +183,10 @@ pub struct Evaluator<'a> {
     trace_setting: TraceSetting,
     /// External data queue for PUSH/QUEUE/PULL.
     queue: VecDeque<String>,
+    /// Optional custom command handler for ADDRESS environments.
+    /// Called as handler(address_env, command_string) -> return_code.
+    /// If the handler returns `None`, the default shell execution is used.
+    command_handler: Option<Box<dyn FnMut(&str, &str) -> Option<i32>>>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -201,6 +205,7 @@ impl<'a> Evaluator<'a> {
             external_depth: 0,
             trace_setting: TraceSetting::default(),
             queue: VecDeque::new(),
+            command_handler: None,
         }
     }
 
@@ -480,20 +485,42 @@ impl<'a> Evaluator<'a> {
         }
     }
 
-    /// Execute a host command: run via `sh -c`, set RC, fire ERROR/FAILURE conditions.
+    /// Execute a host command: try custom handler first, then `sh -c`.
+    /// Sets RC and fires ERROR/FAILURE conditions as appropriate.
     fn exec_host_command(&mut self, command: &str) -> ExecSignal {
-        let result = std::process::Command::new("sh")
-            .arg("-c")
-            .arg(command)
-            .status();
+        // Try the custom command handler first
+        let custom_rc = if let Some(ref mut handler) = self.command_handler {
+            let addr = self.env.address().to_string();
+            handler(&addr, command)
+        } else {
+            None
+        };
 
-        if let Ok(status) = result {
-            let rc = status.code().unwrap_or(-1);
+        let rc = if let Some(rc) = custom_rc {
+            // Custom handler handled it
             self.env.set("RC", RexxValue::new(rc.to_string()));
+            rc
+        } else {
+            // Fall through to shell execution
+            let result = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .status();
+            match result {
+                Ok(status) => {
+                    let code = status.code().unwrap_or(-1);
+                    self.env.set("RC", RexxValue::new(code.to_string()));
+                    code
+                }
+                Err(_) => {
+                    self.env.set("RC", RexxValue::new("-1"));
+                    return self.fire_failure_trap(command);
+                }
+            }
+        };
 
-            if rc != 0
-                && let Some(label) = self.traps.get(&Condition::Error).cloned()
-            {
+        if rc != 0 {
+            if let Some(label) = self.traps.get(&Condition::Error).cloned() {
                 self.env.set_condition_info(crate::env::ConditionInfoData {
                     condition: "ERROR".to_string(),
                     description: command.to_string(),
@@ -503,20 +530,21 @@ impl<'a> Evaluator<'a> {
                 self.traps.remove(&Condition::Error);
                 return ExecSignal::Signal(label);
             }
-            ExecSignal::Normal
-        } else {
-            self.env.set("RC", RexxValue::new("-1"));
+        }
+        ExecSignal::Normal
+    }
 
-            if let Some(label) = self.traps.get(&Condition::Failure).cloned() {
-                self.env.set_condition_info(crate::env::ConditionInfoData {
-                    condition: "FAILURE".to_string(),
-                    description: command.to_string(),
-                    instruction: "SIGNAL".to_string(),
-                    status: "ON".to_string(),
-                });
-                self.traps.remove(&Condition::Failure);
-                return ExecSignal::Signal(label);
-            }
+    fn fire_failure_trap(&mut self, command: &str) -> ExecSignal {
+        if let Some(label) = self.traps.get(&Condition::Failure).cloned() {
+            self.env.set_condition_info(crate::env::ConditionInfoData {
+                condition: "FAILURE".to_string(),
+                description: command.to_string(),
+                instruction: "SIGNAL".to_string(),
+                status: "ON".to_string(),
+            });
+            self.traps.remove(&Condition::Failure);
+            ExecSignal::Signal(label)
+        } else {
             ExecSignal::Normal
         }
     }
@@ -879,6 +907,18 @@ impl<'a> Evaluator<'a> {
     /// Public setter so main.rs can push CLI arguments for the main program.
     pub fn set_main_args(&mut self, args: Vec<RexxValue>) {
         self.arg_stack.push(args);
+    }
+
+    /// Set a custom command handler for ADDRESS environments.
+    ///
+    /// The handler receives (address_environment, command_string) and returns:
+    /// - `Some(rc)` if it handled the command (rc is the return code)
+    /// - `None` if the command should fall through to default shell execution
+    ///
+    /// This allows embedding applications (like XEDIT) to intercept commands
+    /// sent to custom ADDRESS environments.
+    pub fn set_command_handler(&mut self, handler: Box<dyn FnMut(&str, &str) -> Option<i32>>) {
+        self.command_handler = Some(handler);
     }
 
     // ── PARSE template engine ──────────────────────────────────────
