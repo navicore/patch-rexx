@@ -164,6 +164,18 @@ impl PendingExit {
     }
 }
 
+/// A custom command handler for ADDRESS environments.
+///
+/// Receives `(address_environment, command_string)` and returns `Some(rc)` if
+/// it handled the command, or `None` to fall through to default shell execution.
+///
+/// # Panics
+///
+/// The handler must not panic. If it does, the panic will propagate through
+/// the evaluator. Handlers should handle all error cases internally and
+/// return appropriate return codes.
+type CommandHandler = Box<dyn FnMut(&str, &str) -> Option<i32>>;
+
 pub struct Evaluator<'a> {
     env: &'a mut Environment,
     program: &'a Program,
@@ -184,10 +196,9 @@ pub struct Evaluator<'a> {
     /// External data queue for PUSH/QUEUE/PULL.
     queue: VecDeque<String>,
     /// Optional custom command handler for ADDRESS environments.
-    /// Called as `handler(address_env``command_string`ng)`return_code`code.
-    /// If the handler returns `None`, the default shell execution is used.
-    #[allow(clippy::type_complexity)]
-    command_handler: Option<Box<dyn FnMut(&str, &str) -> Option<i32>>>,
+    /// Called as `handler(address_environment, command_string)` and returns
+    /// `Some(rc)` to handle the command or `None` to fall through to shell execution.
+    command_handler: Option<CommandHandler>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -909,14 +920,13 @@ impl<'a> Evaluator<'a> {
 
     /// Set a custom command handler for ADDRESS environments.
     ///
-    /// The handler receives (`address_environment``command_string`ng) and returns:
+    /// The handler receives `(address_environment, command_string)` and returns:
     /// - `Some(rc)` if it handled the command (rc is the return code)
     /// - `None` if the command should fall through to default shell execution
     ///
     /// This allows embedding applications (like XEDIT) to intercept commands
     /// sent to custom ADDRESS environments.
-    #[allow(clippy::type_complexity)]
-    pub fn set_command_handler(&mut self, handler: Box<dyn FnMut(&str, &str) -> Option<i32>>) {
+    pub fn set_command_handler(&mut self, handler: CommandHandler) {
         self.command_handler = Some(handler);
     }
 
