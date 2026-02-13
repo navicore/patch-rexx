@@ -184,8 +184,9 @@ pub struct Evaluator<'a> {
     /// External data queue for PUSH/QUEUE/PULL.
     queue: VecDeque<String>,
     /// Optional custom command handler for ADDRESS environments.
-    /// Called as handler(address_env, command_string) -> return_code.
+    /// Called as `handler(address_env``command_string`ng)`return_code`code.
     /// If the handler returns `None`, the default shell execution is used.
+    #[allow(clippy::type_complexity)]
     command_handler: Option<Box<dyn FnMut(&str, &str) -> Option<i32>>>,
 }
 
@@ -506,21 +507,18 @@ impl<'a> Evaluator<'a> {
                 .arg("-c")
                 .arg(command)
                 .status();
-            match result {
-                Ok(status) => {
-                    let code = status.code().unwrap_or(-1);
-                    self.env.set("RC", RexxValue::new(code.to_string()));
-                    code
-                }
-                Err(_) => {
-                    self.env.set("RC", RexxValue::new("-1"));
-                    return self.fire_failure_trap(command);
-                }
+            if let Ok(status) = result {
+                let code = status.code().unwrap_or(-1);
+                self.env.set("RC", RexxValue::new(code.to_string()));
+                code
+            } else {
+                self.env.set("RC", RexxValue::new("-1"));
+                return self.fire_failure_trap(command);
             }
         };
 
-        if rc != 0 {
-            if let Some(label) = self.traps.get(&Condition::Error).cloned() {
+        if rc != 0
+            && let Some(label) = self.traps.get(&Condition::Error).cloned() {
                 self.env.set_condition_info(crate::env::ConditionInfoData {
                     condition: "ERROR".to_string(),
                     description: command.to_string(),
@@ -530,7 +528,6 @@ impl<'a> Evaluator<'a> {
                 self.traps.remove(&Condition::Error);
                 return ExecSignal::Signal(label);
             }
-        }
         ExecSignal::Normal
     }
 
@@ -911,12 +908,13 @@ impl<'a> Evaluator<'a> {
 
     /// Set a custom command handler for ADDRESS environments.
     ///
-    /// The handler receives (address_environment, command_string) and returns:
+    /// The handler receives (`address_environment``command_string`ng) and returns:
     /// - `Some(rc)` if it handled the command (rc is the return code)
     /// - `None` if the command should fall through to default shell execution
     ///
     /// This allows embedding applications (like XEDIT) to intercept commands
     /// sent to custom ADDRESS environments.
+    #[allow(clippy::type_complexity)]
     pub fn set_command_handler(&mut self, handler: Box<dyn FnMut(&str, &str) -> Option<i32>>) {
         self.command_handler = Some(handler);
     }
