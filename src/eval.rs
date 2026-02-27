@@ -15,7 +15,7 @@ use crate::ast::{
     DoKind, Expr, NumericFormSetting, NumericSetting, ParseSource, ParseTemplate, Program,
     SignalAction, TailElement, TemplateElement, UnaryOp,
 };
-use crate::env::Environment;
+use crate::env::{EnvVars, Environment};
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
 use crate::lexer::Lexer;
 use crate::parser::Parser;
@@ -176,6 +176,24 @@ impl PendingExit {
 /// return appropriate return codes.
 type CommandHandler = Box<dyn FnMut(&str, &str) -> Option<i32>>;
 
+/// A custom command handler that also receives an [`EnvVars`] handle for
+/// reading and writing REXX variables.
+///
+/// Receives `(address_environment, command_string, vars)` and returns `Some(rc)`
+/// if it handled the command, or `None` to fall through to default shell execution.
+///
+/// This variant allows embedding applications to inspect and update REXX variables
+/// (e.g., refreshing EXTRACT stem variables) during command execution.  The
+/// [`EnvVars`] wrapper intentionally restricts access to variable operations only —
+/// ADDRESS routing and PROCEDURE scoping are not exposed.
+///
+/// # Panics
+///
+/// The handler must not panic. If it does, the panic will propagate through
+/// the evaluator. Handlers should handle all error cases internally and
+/// return appropriate return codes.
+type CommandHandlerWithEnv = Box<dyn FnMut(&str, &str, &mut EnvVars<'_>) -> Option<i32>>;
+
 pub struct Evaluator<'a> {
     env: &'a mut Environment,
     program: &'a Program,
@@ -199,6 +217,10 @@ pub struct Evaluator<'a> {
     /// Called as `handler(address_environment, command_string)` and returns
     /// `Some(rc)` to handle the command or `None` to fall through to shell execution.
     command_handler: Option<CommandHandler>,
+    /// Optional custom command handler with `&mut Environment` access.
+    /// Tried before `command_handler`; allows embedding applications to
+    /// inspect and update REXX variables during command execution.
+    command_handler_with_env: Option<CommandHandlerWithEnv>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -218,6 +240,7 @@ impl<'a> Evaluator<'a> {
             trace_setting: TraceSetting::default(),
             queue: VecDeque::new(),
             command_handler: None,
+            command_handler_with_env: None,
         }
     }
 
@@ -500,13 +523,26 @@ impl<'a> Evaluator<'a> {
     /// Execute a host command: try custom handler first, then `sh -c`.
     /// Sets RC and fires ERROR/FAILURE conditions as appropriate.
     fn exec_host_command(&mut self, command: &str) -> ExecSignal {
-        // Try the custom command handler first
-        let custom_rc = if let Some(ref mut handler) = self.command_handler {
+        // Try the env-aware handler first.
+        // We use take/put-back to split the borrow: `handler` is moved out of
+        // `self` so we can pass `&mut self.env` (wrapped in EnvVars) without
+        // conflicting with the `&mut self` borrow.  If the handler panics the
+        // slot stays empty, but the panic propagates immediately — the empty
+        // slot only matters if the caller catches the unwind.
+        let mut custom_rc = None;
+        if let Some(mut handler) = self.command_handler_with_env.take() {
             let addr = self.env.address().to_string();
-            handler(&addr, command)
-        } else {
-            None
-        };
+            let mut vars = EnvVars::new(self.env);
+            custom_rc = handler(&addr, command, &mut vars);
+            self.command_handler_with_env = Some(handler);
+        }
+        // Fall through to the basic handler if the env-aware handler didn't handle it
+        if custom_rc.is_none()
+            && let Some(ref mut handler) = self.command_handler
+        {
+            let addr = self.env.address().to_string();
+            custom_rc = handler(&addr, command);
+        }
 
         let rc = if let Some(rc) = custom_rc {
             // Custom handler handled it
@@ -528,7 +564,11 @@ impl<'a> Evaluator<'a> {
             }
         };
 
-        if rc != 0
+        // ANSI X3.274-1996 §7.3.3: negative rc → FAILURE, positive rc → ERROR
+        if rc < 0 {
+            return self.fire_failure_trap(command);
+        }
+        if rc > 0
             && let Some(label) = self.traps.get(&Condition::Error).cloned()
         {
             self.env.set_condition_info(crate::env::ConditionInfoData {
@@ -928,6 +968,28 @@ impl<'a> Evaluator<'a> {
     /// sent to custom ADDRESS environments.
     pub fn set_command_handler(&mut self, handler: CommandHandler) {
         self.command_handler = Some(handler);
+    }
+
+    /// Set a custom command handler that receives an [`EnvVars`] handle for
+    /// reading and writing REXX variables.
+    ///
+    /// The handler receives `(address_environment, command_string, vars)` and returns:
+    /// - `Some(rc)` if it handled the command (rc is the return code)
+    /// - `None` if the command should fall through to the next handler or default shell execution
+    ///
+    /// This handler is tried before the basic `command_handler`. It allows embedding
+    /// applications (like XEDIT) to inspect and update REXX variables during command
+    /// execution — for example, refreshing EXTRACT stem variables after state-changing
+    /// commands.  The [`EnvVars`] wrapper restricts access to variable operations only,
+    /// preventing handlers from mutating ADDRESS routing or PROCEDURE scoping.
+    ///
+    /// # Panics
+    ///
+    /// Handlers **must not** panic. If a handler panics the panic propagates through
+    /// the evaluator; if the caller catches the unwind, the handler slot is left empty
+    /// and subsequent commands fall through to `command_handler` or shell execution.
+    pub fn set_command_handler_with_env(&mut self, handler: CommandHandlerWithEnv) {
+        self.command_handler_with_env = Some(handler);
     }
 
     // ── PARSE template engine ──────────────────────────────────────
@@ -2297,5 +2359,101 @@ mod tests {
     fn eval_integer_division() {
         let val = eval_expr("17 % 5");
         assert_eq!(val.as_str(), "3");
+    }
+
+    #[test]
+    fn command_handler_with_env_sets_compound() {
+        let mut env = Environment::new();
+        let src = "address XEDIT; 'EXTRACT /CURLINE/'; say CURLINE.1";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, vars| {
+            vars.set_compound("CURLINE", "1", RexxValue::new("Hello from XEDIT"));
+            Some(0)
+        }));
+        let signal = eval.exec().unwrap();
+        assert!(matches!(signal, ExecSignal::Normal));
+        assert_eq!(env.get("RC").as_str(), "0");
+        assert_eq!(
+            env.get_compound("CURLINE", "1").as_str(),
+            "Hello from XEDIT"
+        );
+    }
+
+    #[test]
+    fn command_handler_with_env_none_falls_through_to_basic() {
+        let mut env = Environment::new();
+        // The env-aware handler returns None, so the basic handler should be consulted
+        let src = "'some command'";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, _vars| None));
+        eval.set_command_handler(Box::new(|_addr, _cmd| Some(7)));
+        let signal = eval.exec().unwrap();
+        assert!(matches!(signal, ExecSignal::Normal));
+        assert_eq!(env.get("RC").as_str(), "7");
+    }
+
+    #[test]
+    fn command_handler_with_env_some_skips_basic() {
+        let mut env = Environment::new();
+        let src = "'some command'";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, _vars| Some(0)));
+        eval.set_command_handler(Box::new(|_addr, _cmd| Some(99)));
+        let signal = eval.exec().unwrap();
+        assert!(matches!(signal, ExecSignal::Normal));
+        // The env-aware handler handled it; basic handler should NOT be called
+        assert_eq!(env.get("RC").as_str(), "0");
+    }
+
+    #[test]
+    fn command_handler_with_env_error_trap_fires() {
+        let mut env = Environment::new();
+        // SIGNAL ON ERROR NAME OOPS routes to the OOPS label when a command returns positive rc
+        let src = "signal on error name oops; 'fail'; say 'NOT REACHED'; exit 0\noops: exit RC";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, _vars| Some(42)));
+        let signal = eval.exec().unwrap();
+        // The ERROR trap should fire, jumping to OOPS which exits with RC=42
+        match &signal {
+            ExecSignal::Exit(Some(val)) => assert_eq!(val.as_str(), "42"),
+            _ => panic!("expected Exit(Some(42))"),
+        }
+        assert_eq!(env.get("RC").as_str(), "42");
+    }
+
+    #[test]
+    fn command_handler_with_env_failure_trap_fires_on_negative_rc() {
+        let mut env = Environment::new();
+        // SIGNAL ON FAILURE NAME BAD routes to BAD when a command returns negative rc
+        let src = "signal on failure name bad; 'notfound'; say 'NOT REACHED'; exit 0\nbad: exit RC";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, _vars| Some(-3)));
+        let signal = eval.exec().unwrap();
+        // The FAILURE trap should fire (negative rc), jumping to BAD which exits with RC=-3
+        match &signal {
+            ExecSignal::Exit(Some(val)) => assert_eq!(val.as_str(), "-3"),
+            _ => panic!("expected Exit(Some(-3))"),
+        }
+        assert_eq!(env.get("RC").as_str(), "-3");
     }
 }
