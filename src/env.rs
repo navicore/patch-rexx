@@ -257,6 +257,59 @@ impl Default for Environment {
     }
 }
 
+/// A restricted view of [`Environment`] that exposes only variable operations.
+///
+/// Passed to [`CommandHandlerWithEnv`](crate::eval) closures so that handlers
+/// can read and write REXX variables without access to ADDRESS routing,
+/// PROCEDURE scoping, or other evaluator-internal state.
+pub struct EnvVars<'a>(&'a mut Environment);
+
+impl<'a> EnvVars<'a> {
+    pub(crate) fn new(env: &'a mut Environment) -> Self {
+        Self(env)
+    }
+
+    /// Get a simple variable's value.
+    pub fn get(&self, name: &str) -> RexxValue {
+        self.0.get(name)
+    }
+
+    /// Set a simple variable.
+    pub fn set(&mut self, name: &str, value: RexxValue) {
+        self.0.set(name, value);
+    }
+
+    /// Get a compound variable: `stem.tail`.
+    pub fn get_compound(&self, stem: &str, resolved_tail: &str) -> RexxValue {
+        self.0.get_compound(stem, resolved_tail)
+    }
+
+    /// Set a compound variable.
+    pub fn set_compound(&mut self, stem: &str, resolved_tail: &str, value: RexxValue) {
+        self.0.set_compound(stem, resolved_tail, value);
+    }
+
+    /// Set the default value for a stem (e.g., `stem. = 0`).
+    pub fn set_stem_default(&mut self, stem: &str, value: RexxValue) {
+        self.0.set_stem_default(stem, value);
+    }
+
+    /// Drop (unset) a variable.
+    pub fn drop(&mut self, name: &str) {
+        self.0.drop(name);
+    }
+
+    /// Check whether a simple variable is set.
+    pub fn is_set(&self, name: &str) -> bool {
+        self.0.is_set(name)
+    }
+
+    /// Check whether a compound variable is set.
+    pub fn is_compound_set(&self, stem: &str, resolved_tail: &str) -> bool {
+        self.0.is_compound_set(stem, resolved_tail)
+    }
+}
+
 impl Scope {
     fn new() -> Self {
         Self {
