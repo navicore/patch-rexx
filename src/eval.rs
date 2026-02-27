@@ -176,6 +176,21 @@ impl PendingExit {
 /// return appropriate return codes.
 type CommandHandler = Box<dyn FnMut(&str, &str) -> Option<i32>>;
 
+/// A custom command handler that also receives `&mut Environment`.
+///
+/// Receives `(address_environment, command_string, env)` and returns `Some(rc)`
+/// if it handled the command, or `None` to fall through to default shell execution.
+///
+/// This variant allows embedding applications to inspect and update REXX variables
+/// (e.g., refreshing EXTRACT stem variables) during command execution.
+///
+/// # Panics
+///
+/// The handler must not panic. If it does, the panic will propagate through
+/// the evaluator. Handlers should handle all error cases internally and
+/// return appropriate return codes.
+type CommandHandlerWithEnv = Box<dyn FnMut(&str, &str, &mut Environment) -> Option<i32>>;
+
 pub struct Evaluator<'a> {
     env: &'a mut Environment,
     program: &'a Program,
@@ -199,6 +214,10 @@ pub struct Evaluator<'a> {
     /// Called as `handler(address_environment, command_string)` and returns
     /// `Some(rc)` to handle the command or `None` to fall through to shell execution.
     command_handler: Option<CommandHandler>,
+    /// Optional custom command handler with `&mut Environment` access.
+    /// Tried before `command_handler`; allows embedding applications to
+    /// inspect and update REXX variables during command execution.
+    command_handler_with_env: Option<CommandHandlerWithEnv>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -218,6 +237,7 @@ impl<'a> Evaluator<'a> {
             trace_setting: TraceSetting::default(),
             queue: VecDeque::new(),
             command_handler: None,
+            command_handler_with_env: None,
         }
     }
 
@@ -500,8 +520,13 @@ impl<'a> Evaluator<'a> {
     /// Execute a host command: try custom handler first, then `sh -c`.
     /// Sets RC and fires ERROR/FAILURE conditions as appropriate.
     fn exec_host_command(&mut self, command: &str) -> ExecSignal {
-        // Try the custom command handler first
-        let custom_rc = if let Some(ref mut handler) = self.command_handler {
+        // Try the env-aware handler first (take/put-back to avoid borrow conflict with self.env)
+        let custom_rc = if let Some(mut handler) = self.command_handler_with_env.take() {
+            let addr = self.env.address().to_string();
+            let rc = handler(&addr, command, self.env);
+            self.command_handler_with_env = Some(handler);
+            rc
+        } else if let Some(ref mut handler) = self.command_handler {
             let addr = self.env.address().to_string();
             handler(&addr, command)
         } else {
@@ -928,6 +953,19 @@ impl<'a> Evaluator<'a> {
     /// sent to custom ADDRESS environments.
     pub fn set_command_handler(&mut self, handler: CommandHandler) {
         self.command_handler = Some(handler);
+    }
+
+    /// Set a custom command handler that also receives `&mut Environment`.
+    ///
+    /// The handler receives `(address_environment, command_string, env)` and returns:
+    /// - `Some(rc)` if it handled the command (rc is the return code)
+    /// - `None` if the command should fall through to the next handler or default shell execution
+    ///
+    /// This handler is tried before the basic `command_handler`. It allows embedding
+    /// applications (like XEDIT) to inspect and update REXX variables during command
+    /// execution — for example, refreshing EXTRACT stem variables after state-changing commands.
+    pub fn set_command_handler_with_env(&mut self, handler: CommandHandlerWithEnv) {
+        self.command_handler_with_env = Some(handler);
     }
 
     // ── PARSE template engine ──────────────────────────────────────
