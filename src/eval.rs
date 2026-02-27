@@ -521,17 +521,19 @@ impl<'a> Evaluator<'a> {
     /// Sets RC and fires ERROR/FAILURE conditions as appropriate.
     fn exec_host_command(&mut self, command: &str) -> ExecSignal {
         // Try the env-aware handler first (take/put-back to avoid borrow conflict with self.env)
-        let custom_rc = if let Some(mut handler) = self.command_handler_with_env.take() {
+        let mut custom_rc = None;
+        if let Some(mut handler) = self.command_handler_with_env.take() {
             let addr = self.env.address().to_string();
-            let rc = handler(&addr, command, self.env);
+            custom_rc = handler(&addr, command, self.env);
             self.command_handler_with_env = Some(handler);
-            rc
-        } else if let Some(ref mut handler) = self.command_handler {
+        }
+        // Fall through to the basic handler if the env-aware handler didn't handle it
+        if custom_rc.is_none()
+            && let Some(ref mut handler) = self.command_handler
+        {
             let addr = self.env.address().to_string();
-            handler(&addr, command)
-        } else {
-            None
-        };
+            custom_rc = handler(&addr, command);
+        }
 
         let rc = if let Some(rc) = custom_rc {
             // Custom handler handled it
@@ -2335,5 +2337,58 @@ mod tests {
     fn eval_integer_division() {
         let val = eval_expr("17 % 5");
         assert_eq!(val.as_str(), "3");
+    }
+
+    #[test]
+    fn command_handler_with_env_sets_rc() {
+        let mut env = Environment::new();
+        let src = "address XEDIT; 'EXTRACT /CURLINE/'";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, env| {
+            env.set("CURLINE.1", RexxValue::new("Hello from XEDIT"));
+            Some(0)
+        }));
+        let signal = eval.exec().unwrap();
+        assert!(matches!(signal, ExecSignal::Normal));
+        assert_eq!(env.get("RC").as_str(), "0");
+        assert_eq!(env.get("CURLINE.1").as_str(), "Hello from XEDIT");
+    }
+
+    #[test]
+    fn command_handler_with_env_none_falls_through_to_basic() {
+        let mut env = Environment::new();
+        // The env-aware handler returns None, so the basic handler should be consulted
+        let src = "'some command'";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, _env| None));
+        eval.set_command_handler(Box::new(|_addr, _cmd| Some(7)));
+        let signal = eval.exec().unwrap();
+        assert!(matches!(signal, ExecSignal::Normal));
+        assert_eq!(env.get("RC").as_str(), "7");
+    }
+
+    #[test]
+    fn command_handler_with_env_some_skips_basic() {
+        let mut env = Environment::new();
+        let src = "'some command'";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, _env| Some(0)));
+        eval.set_command_handler(Box::new(|_addr, _cmd| Some(99)));
+        let signal = eval.exec().unwrap();
+        assert!(matches!(signal, ExecSignal::Normal));
+        // The env-aware handler handled it; basic handler should NOT be called
+        assert_eq!(env.get("RC").as_str(), "0");
     }
 }
