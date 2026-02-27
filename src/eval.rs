@@ -520,7 +520,11 @@ impl<'a> Evaluator<'a> {
     /// Execute a host command: try custom handler first, then `sh -c`.
     /// Sets RC and fires ERROR/FAILURE conditions as appropriate.
     fn exec_host_command(&mut self, command: &str) -> ExecSignal {
-        // Try the env-aware handler first (take/put-back to avoid borrow conflict with self.env)
+        // Try the env-aware handler first.
+        // We use take/put-back to avoid a borrow conflict with self.env.
+        // If the handler panics, the slot is intentionally left empty so the
+        // evaluator cannot call back into a poisoned closure; subsequent
+        // commands will fall through to command_handler or shell execution.
         let mut custom_rc = None;
         if let Some(mut handler) = self.command_handler_with_env.take() {
             let addr = self.env.address().to_string();
@@ -966,6 +970,17 @@ impl<'a> Evaluator<'a> {
     /// This handler is tried before the basic `command_handler`. It allows embedding
     /// applications (like XEDIT) to inspect and update REXX variables during command
     /// execution — for example, refreshing EXTRACT stem variables after state-changing commands.
+    ///
+    /// # Restrictions
+    ///
+    /// Handlers **must not** call [`Environment::set_address`]. The evaluator manages the
+    /// ADDRESS default/previous ring around each command dispatch; mutating it inside the
+    /// handler will corrupt the previous-address tracking, especially for `ADDRESS … cmd`
+    /// (temporary) invocations.
+    ///
+    /// Handlers **must not** panic. If a handler panics (and the caller catches the unwind),
+    /// the handler slot is left empty and subsequent commands will fall through to the basic
+    /// `command_handler` or shell execution.
     pub fn set_command_handler_with_env(&mut self, handler: CommandHandlerWithEnv) {
         self.command_handler_with_env = Some(handler);
     }
@@ -2390,5 +2405,25 @@ mod tests {
         assert!(matches!(signal, ExecSignal::Normal));
         // The env-aware handler handled it; basic handler should NOT be called
         assert_eq!(env.get("RC").as_str(), "0");
+    }
+
+    #[test]
+    fn command_handler_with_env_error_trap_fires() {
+        let mut env = Environment::new();
+        // SIGNAL ON ERROR NAME OOPS routes to the OOPS label when a command returns nonzero rc
+        let src = "signal on error name oops; 'fail'; say 'NOT REACHED'; exit 0\noops: exit RC";
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let program = parser.parse().unwrap();
+        let mut eval = Evaluator::new(&mut env, &program);
+        eval.set_command_handler_with_env(Box::new(|_addr, _cmd, _env| Some(42)));
+        let signal = eval.exec().unwrap();
+        // The ERROR trap should fire, jumping to OOPS which exits with RC=42
+        match &signal {
+            ExecSignal::Exit(Some(val)) => assert_eq!(val.as_str(), "42"),
+            _ => panic!("expected Exit(Some(42))"),
+        }
+        assert_eq!(env.get("RC").as_str(), "42");
     }
 }
