@@ -5,6 +5,8 @@
 
 A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274-1996.
 
+**[Documentation](https://navicore.github.io/patch-rexx/)** -- quickstart, language status, BIF reference, and design docs.
+
 ```rexx
 /* Classic REXX */
 say "What is your name?"
