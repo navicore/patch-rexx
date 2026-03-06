@@ -231,8 +231,8 @@ Goal: a rich `examples/` directory showcasing REXX's strengths and idioms.
 - [x] ADDRESS: shell scripting, command execution
 - [x] Data queues: PUSH/QUEUE/PULL, stem arrays
 - [x] Each example includes a header comment explaining what it demonstrates
-- [ ] Real-world scripts: log parser, CSV processor, file renamer, simple HTTP client
-- [ ] TRACE: annotated examples showing each trace setting
+- [x] Real-world scripts: log parser, CSV processor, file renamer
+- [x] TRACE: annotated examples showing each trace setting
 
 Milestone: newcomers can learn REXX by reading and running the examples directory.
 

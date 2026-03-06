@@ -28,3 +28,7 @@ rexx examples/fizzbuzz.rexx
 | `interpret_calc.rexx` | INTERPRET for dynamic code evaluation |
 | `address_shell.rexx` | ADDRESS SYSTEM, shell commands, RC |
 | `queues.rexx` | PUSH, QUEUE, PULL, QUEUED() |
+| `trace_demo.rexx` | TRACE RESULTS/INTERMEDIATES, output tags, TRACE() BIF |
+| `log_parser.rexx` | Log line parsing, stem counters, SELECT/WHEN filtering |
+| `csv_processor.rexx` | CSV parsing, column statistics, department aggregation |
+| `file_renamer.rexx` | Batch rename planner: TRANSLATE, PARSE, string cleanup |
