@@ -1,0 +1,25 @@
+[book]
+title = "patch-rexx"
+authors = ["navicore"]
+description = "Documentation for patch-rexx — a modern REXX interpreter in Rust"
+src = "docs"
+language = "en"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/navicore/patch-rexx"
+edit-url-template = "https://github.com/navicore/patch-rexx/edit/main/docs/{path}"
+site-url = "/patch-rexx/"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+boost-hierarchy = 2

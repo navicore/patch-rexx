@@ -4,214 +4,239 @@ A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274
 
 ## Current State
 
-Foundation modules with passing tests:
-- **value.rs** — RexxValue (everything-is-a-string), BigDecimal integration, NUMERIC DIGITS/FORM/FUZZ settings
-- **error.rs** — All ANSI REXX error numbers (4-49) with source-location diagnostics
-- **lexer.rs** — Full tokenizer: strings, numbers, symbols, all operators, nested `/* */` comments, hex/binary string literals
-- **ast.rs** — Complete AST covering all REXX clause types, DO variants, PARSE templates, expressions
-- **env.rs** — Variable environments with REXX scoping: PROCEDURE isolation, EXPOSE, stem/compound variables, DROP
-- **main.rs** — CLI (file execution, `-e` eval, REPL with rustyline)
+Functional interpreter with 500+ tests. Phases 1--9, 11, and 13 are complete. The LSP (Phase 10) is implemented. Phase 12 conformance work is in progress.
 
-## Phase 1 — SAY and Expressions
+Core modules:
+- **lexer.rs** -- Full tokenizer: strings, numbers, symbols, all operators, nested `/* */` comments, hex/binary string literals
+- **parser.rs** -- All REXX clause types, expression precedence, PARSE templates, DO variants
+- **eval.rs** -- Full evaluator: control flow, PARSE, SIGNAL, INTERPRET, ADDRESS, TRACE, NUMERIC, queues
+- **ast.rs** -- Complete AST covering all REXX clause types, DO variants, PARSE templates, expressions
+- **builtins.rs** -- 53 built-in functions (string, word, numeric, conversion, date/time, system)
+- **env.rs** -- Variable environments with REXX scoping: PROCEDURE isolation, EXPOSE, stem/compound variables, DROP
+- **external.rs** -- External function resolution: .rexx/.rex files, REXXPATH search
+- **value.rs** -- RexxValue (everything-is-a-string), BigDecimal integration, NUMERIC DIGITS/FORM/FUZZ settings
+- **error.rs** -- All ANSI REXX error numbers (4--49) with source-location diagnostics
+- **repl.rs** -- Interactive REPL with vim-mode editing (vim-line + crossterm), persistent history
+- **main.rs** -- CLI: file execution, `-e` eval, REPL, pipe mode
+- **lsp/** -- Language Server Protocol: diagnostics, completion, hover, definition, symbols, actions, hints
+
+## Phase 1 -- SAY and Expressions
 
 Goal: `say 2 + 3` prints `5`.
 
-- [ ] Parser: expression parsing with REXX operator precedence
-- [ ] Parser: SAY instruction
-- [ ] Parser: assignment (`x = expr`)
-- [ ] Evaluator: arithmetic (+, -, *, /, %, //, **)
-- [ ] Evaluator: string concatenation (abuttal, `||`, blank concatenation)
-- [ ] Evaluator: comparison operators (normal and strict)
-- [ ] Evaluator: logical operators (&, |, &&, \)
-- [ ] Wire parser and evaluator into main.rs run_source
-- [ ] REPL evaluates and displays results
+- [x] Parser: expression parsing with REXX operator precedence
+- [x] Parser: SAY instruction
+- [x] Parser: assignment (`x = expr`)
+- [x] Evaluator: arithmetic (+, -, *, /, %, //, **)
+- [x] Evaluator: string concatenation (abuttal, `||`, blank concatenation)
+- [x] Evaluator: comparison operators (normal and strict)
+- [x] Evaluator: logical operators (&, |, &&, \)
+- [x] Wire parser and evaluator into main.rs run_source
+- [x] REPL evaluates and displays results
 
 Milestone: run classic REXX one-liners interactively.
 
-## Phase 2 — Control Flow
+## Phase 2 -- Control Flow
 
 Goal: IF/THEN/ELSE, DO loops, SELECT/WHEN.
 
-- [ ] Parser: IF/THEN/ELSE
-- [ ] Parser: DO/END (simple, FOREVER, counted, WHILE, UNTIL, controlled)
-- [ ] Parser: SELECT/WHEN/OTHERWISE/END
-- [ ] Parser: LEAVE, ITERATE (with optional name targeting)
-- [ ] Parser: NOP
-- [ ] Evaluator: all control flow
-- [ ] Labels (for SIGNAL targets and CALL)
+- [x] Parser: IF/THEN/ELSE
+- [x] Parser: DO/END (simple, FOREVER, counted, WHILE, UNTIL, controlled)
+- [x] Parser: SELECT/WHEN/OTHERWISE/END
+- [x] Parser: LEAVE, ITERATE (with optional name targeting)
+- [x] Parser: NOP
+- [x] Evaluator: all control flow
+- [x] Labels (for SIGNAL targets and CALL)
 
 Milestone: FizzBuzz, factorial, standard interview programs.
 
-## Phase 3 — Subroutines and Functions
+## Phase 3 -- Subroutines and Functions
 
 Goal: CALL, RETURN, internal routines, PROCEDURE EXPOSE.
 
-- [ ] Parser: CALL instruction
-- [ ] Parser: function call syntax in expressions: `name(args)`
-- [ ] Parser: PROCEDURE / PROCEDURE EXPOSE
-- [ ] Parser: RETURN / EXIT
-- [ ] Evaluator: internal subroutine calls (label-based)
-- [ ] Evaluator: PROCEDURE scoping (already modeled in env.rs)
-- [ ] Evaluator: function calls (must return a value)
-- [ ] Evaluator: CALL (may or may not return via RESULT)
-- [ ] ARG / PARSE ARG for parameter passing
+- [x] Parser: CALL instruction
+- [x] Parser: function call syntax in expressions: `name(args)`
+- [x] Parser: PROCEDURE / PROCEDURE EXPOSE
+- [x] Parser: RETURN / EXIT
+- [x] Evaluator: internal subroutine calls (label-based)
+- [x] Evaluator: PROCEDURE scoping (already modeled in env.rs)
+- [x] Evaluator: function calls (must return a value)
+- [x] Evaluator: CALL (may or may not return via RESULT)
+- [x] ARG / PARSE ARG for parameter passing
 
 Milestone: recursive programs, multi-routine scripts.
 
-## Phase 4 — PARSE
+## Phase 4 -- PARSE
 
-Goal: full PARSE instruction — REXX's signature feature.
+Goal: full PARSE instruction -- REXX's signature feature.
 
-- [ ] PARSE ARG
-- [ ] PARSE PULL
-- [ ] PARSE VAR name
-- [ ] PARSE VALUE expr WITH
-- [ ] PARSE SOURCE
-- [ ] PARSE VERSION
-- [ ] PARSE LINEIN
-- [ ] PARSE UPPER variants
-- [ ] Template patterns: literal string matching
-- [ ] Template patterns: absolute column positions
-- [ ] Template patterns: relative column positions (+n, -n)
-- [ ] Template patterns: variable patterns
-- [ ] Template patterns: dot placeholder (discard)
-- [ ] Multiple template parsing (comma-separated argument strings)
+- [x] PARSE ARG
+- [x] PARSE PULL
+- [x] PARSE VAR name
+- [x] PARSE VALUE expr WITH
+- [x] PARSE SOURCE
+- [x] PARSE VERSION
+- [x] PARSE LINEIN
+- [x] PARSE UPPER variants
+- [x] Template patterns: literal string matching
+- [x] Template patterns: absolute column positions
+- [x] Template patterns: relative column positions (+n, -n)
+- [x] Template patterns: variable patterns
+- [x] Template patterns: dot placeholder (discard)
+- [x] Multiple template parsing (comma-separated argument strings)
 
-Milestone: real REXX string processing — parsing input, extracting fields.
+Milestone: real REXX string processing -- parsing input, extracting fields.
 
-## Phase 5 — Built-in Functions (~70 BIFs)
+## Phase 5 -- Built-in Functions (~70 BIFs)
 
 Goal: ANSI REXX built-in function library.
 
+53 of ~70 ANSI BIFs implemented. See below for what remains.
+
 ### String
-- [ ] ABBREV, COPIES, CENTER/CENTRE, COMPARE
-- [ ] DELSTR, DELWORD, INSERT, LASTPOS, LEFT, LENGTH
-- [ ] OVERLAY, POS, REVERSE, RIGHT, STRIP
-- [ ] SUBSTR, SUBWORD, TRANSLATE, VERIFY, WORD
-- [ ] WORDINDEX, WORDLENGTH, WORDPOS, WORDS
+- [x] ABBREV, COPIES, COMPARE
+- [ ] CENTER/CENTRE
+- [x] DELSTR, DELWORD, INSERT, LASTPOS, LEFT, LENGTH
+- [x] OVERLAY, POS, REVERSE, RIGHT, STRIP
+- [x] SUBSTR, SUBWORD, TRANSLATE, VERIFY, WORD
+- [x] WORDINDEX, WORDLENGTH, WORDPOS, WORDS
+- [x] CHANGESTR, COUNTSTR, SPACE (extensions)
 
 ### Numeric
-- [ ] ABS, FORMAT, MAX, MIN, SIGN, TRUNC
-- [ ] RANDOM
+- [x] ABS, FORMAT, MAX, MIN, SIGN, TRUNC
+- [x] RANDOM
 
 ### Conversion
-- [ ] B2X, C2D, C2X, D2C, D2X, X2B, X2C, X2D
-- [ ] DATATYPE
+- [x] B2X, C2D, C2X, D2C, D2X, X2B, X2C, X2D
+- [x] DATATYPE
 
 ### Bit
 - [ ] BITAND, BITOR, BITXOR
 
 ### Misc
-- [ ] ADDRESS, ARG, CONDITION, DATE, DIGITS
-- [ ] ERRORTEXT, FORM, FUZZ, QUEUED, SOURCELINE
-- [ ] SYMBOL, TIME, TRACE, VALUE, XRANGE
+- [x] ADDRESS, ARG, CONDITION, DATE, DIGITS
+- [ ] ERRORTEXT
+- [x] FORM, FUZZ, QUEUED
+- [ ] SOURCELINE
+- [ ] SYMBOL
+- [x] TIME, TRACE
+- [ ] VALUE (as a BIF)
+- [x] XRANGE
+
+**Remaining**: CENTER/CENTRE, BITAND, BITOR, BITXOR, ERRORTEXT, SOURCELINE, SYMBOL, VALUE (BIF).
 
 Milestone: REXX programs that rely on the standard function library work.
 
-## Phase 6 — SIGNAL and Conditions
+## Phase 6 -- SIGNAL and Conditions
 
 Goal: error trapping and SIGNAL flow control.
 
-- [ ] SIGNAL label (unconditional transfer)
-- [ ] SIGNAL VALUE expr
-- [ ] SIGNAL ON condition NAME label
-- [ ] SIGNAL OFF condition
-- [ ] Conditions: ERROR, FAILURE, HALT, NOVALUE, NOTREADY, SYNTAX, LOSTDIGITS
-- [ ] Condition information: CONDITION('C'), CONDITION('D'), etc.
-- [ ] RC (return code) special variable
+- [x] SIGNAL label (unconditional transfer)
+- [x] SIGNAL VALUE expr
+- [x] SIGNAL ON condition NAME label
+- [x] SIGNAL OFF condition
+- [x] Conditions: ERROR, FAILURE, HALT, NOVALUE, NOTREADY, SYNTAX, LOSTDIGITS
+- [x] Condition information: CONDITION('C'), CONDITION('D'), etc.
+- [x] RC (return code) special variable
 
 Milestone: robust error handling in REXX programs.
 
-## Phase 7 — INTERPRET
+## Phase 7 -- INTERPRET
 
 Goal: dynamic code evaluation.
 
-- [ ] INTERPRET expr — parse and execute a string as REXX code
-- [ ] Access to current variable environment from interpreted code
-- [ ] Correct scoping (interpreted code runs in caller's scope)
-
-This is trivial in an interpreter — the parser and evaluator already exist.
-INTERPRET just feeds a string through the same pipeline.
+- [x] INTERPRET expr -- parse and execute a string as REXX code
+- [x] Access to current variable environment from interpreted code
+- [x] Correct scoping (interpreted code runs in caller's scope)
+- [x] Recursion depth limit (100 levels)
 
 Milestone: dynamic REXX programs, code generation patterns.
 
-## Phase 8 — ADDRESS and External Commands
+## Phase 8 -- ADDRESS and External Commands
 
 Goal: host command environment.
 
-- [ ] ADDRESS instruction (set default, temporary, VALUE)
-- [ ] Shell-out to system commands
-- [ ] RC capture from external commands
-- [ ] SYSTEM/CMD/SH environment routing
-- [ ] Correct quoting and I/O for command strings
+- [x] ADDRESS instruction (set default, temporary, VALUE)
+- [x] Shell-out to system commands
+- [x] RC capture from external commands
+- [x] SYSTEM/CMD/SH environment routing
+- [x] Correct quoting and I/O for command strings
 
-Milestone: REXX as a scripting/glue language — its original purpose.
+Milestone: REXX as a scripting/glue language -- its original purpose.
 
-## Phase 9 — TRACE (Interactive Debugging)
+## Phase 9 -- TRACE (Interactive Debugging)
 
-Goal: REXX's built-in tracing — one of its best features.
+Goal: REXX's built-in tracing -- one of its best features.
 
-- [ ] TRACE OFF, TRACE NORMAL, TRACE RESULTS, TRACE INTERMEDIATES, TRACE ALL
-- [ ] TRACE ?prefix (interactive mode — pause and accept input)
-- [ ] Display clause source, results, intermediate values
-- [ ] Correct numbering and formatting per ANSI spec
+- [x] TRACE OFF, TRACE NORMAL, TRACE RESULTS, TRACE INTERMEDIATES, TRACE ALL
+- [x] TRACE COMMANDS, TRACE LABELS, TRACE ERRORS, TRACE FAILURE
+- [x] TRACE ?prefix (interactive mode toggle)
+- [x] Display clause source, results, intermediate values
+- [x] Correct numbering and formatting per ANSI spec
+- [x] Output tags: >V> (variable), >O> (operator), >L> (literal), >P> (prefix), >F> (function), >C> (compound)
+- [ ] Full interactive debugging (pause and accept input at trace points)
 
 Milestone: interactive debugging of REXX programs from within the interpreter.
 
-## Phase 10 — Language Server (LSP)
+## Phase 10 -- Language Server (LSP)
 
 Goal: full editor integration via Language Server Protocol.
 
-Uses tower-lsp + lsp-types (same stack as the Seq LSP in patch-seq).
+Uses tower-lsp (same stack as the Seq LSP in patch-seq). Enabled via `--features lsp`.
 
-- [ ] Diagnostics — parse errors and runtime warnings with source locations
-- [ ] Completion — keywords, built-in functions, variables in scope, stem names
-- [ ] Hover — show variable values, function signatures, BIF documentation
-- [ ] Go to Definition — jump to labels, internal subroutine definitions
-- [ ] Document Symbols — outline of labels, subroutines, PROCEDURE blocks
-- [ ] Code Actions — quick fixes for common errors (typo suggestions, missing END)
-- [ ] Inlay Hints — show PARSE template field assignments, numeric precision
+- [x] Diagnostics -- parse errors with source locations
+- [x] Completion -- keywords, built-in functions, variables in scope, stem names
+- [x] Hover -- keyword syntax, BIF signatures and descriptions
+- [x] Go to Definition -- jump to labels, internal subroutine definitions
+- [x] Document Symbols -- outline of labels, subroutines, PROCEDURE blocks
+- [x] Code Actions -- "Did you mean?" suggestions (Levenshtein distance)
+- [x] Inlay Hints -- PARSE variable annotations, NUMERIC precision info
+- [ ] Neovim plugin (following patch-seq.nvim pattern)
 
-REXX "doesn't need tooling" the way Cowlishaw designed it — TRACE was the IDE.
-But modern editors with inline diagnostics and completion make every language better.
+Milestone: `patch-rexx-lsp` binary, Neovim plugin.
 
-Milestone: `patch-rexx-lsp` binary, Neovim plugin (following patch-seq.nvim pattern).
-
-## Phase 11 — External Function Libraries
+## Phase 11 -- External Function Libraries
 
 Goal: extensibility.
 
-- [ ] REXX function packages (load external .rexx files)
-- [ ] Search order: internal → built-in → external
-- [ ] REXXPATH or similar search path mechanism
+- [x] REXX function packages (load external .rexx/.rex files)
+- [x] Search order: internal -> built-in -> external
+- [x] REXXPATH environment variable search path
 
-## Phase 12 — Polish and Distribution
+Milestone: multi-file REXX programs.
 
+## Phase 12 -- Polish and Distribution
+
+- [x] NUMERIC DIGITS/FORM/FUZZ runtime control
+- [x] PUSH/QUEUE/PULL data queue operations
+- [x] QUEUED() BIF
+- [x] Line continuation (trailing comma)
+- [x] ANSI X3.274-1996 conformance test suite (100+ tests)
 - [ ] Static binary builds (musl on Linux, native on macOS)
 - [ ] Cross-compilation targets (Linux amd64/arm64, macOS, Windows)
 - [ ] WASM target (rexx playground in browser)
-- [ ] ANSI X3.274-1996 conformance test suite
 - [ ] Performance: profile and optimize hot paths (arithmetic, string ops, PARSE)
 - [ ] Consider RexxLA test suite for validation
 
-## Phase 13 — Examples Directory
+## Phase 13 -- Examples Directory
 
 Goal: a rich `examples/` directory showcasing REXX's strengths and idioms.
 
-- [ ] Classic demos: hello world, FizzBuzz, factorial, Fibonacci
-- [ ] String processing: PARSE templates, word manipulation, transliteration
-- [ ] Numeric: arbitrary-precision arithmetic, FORMAT, currency rounding
-- [ ] Control flow: DO loop variants, SELECT, SIGNAL ON error handling
-- [ ] Subroutines: PROCEDURE EXPOSE, recursive routines, function-style calls
-- [ ] INTERPRET: dynamic code generation, calculator, mini-DSL
-- [ ] ADDRESS: shell scripting, pipeline orchestration, build automation
-- [ ] TRACE: annotated examples showing each trace setting
+- [x] Classic demos: hello world, FizzBuzz, factorial, Fibonacci
+- [x] String processing: PARSE templates, word manipulation, transliteration
+- [x] Numeric: arbitrary-precision arithmetic, FORMAT, conversions
+- [x] Control flow: DO loop variants, SELECT, SIGNAL ON error handling
+- [x] Subroutines: PROCEDURE EXPOSE, recursive routines, function-style calls
+- [x] INTERPRET: dynamic code generation, calculator
+- [x] ADDRESS: shell scripting, command execution
+- [x] Data queues: PUSH/QUEUE/PULL, stem arrays
+- [x] Each example includes a header comment explaining what it demonstrates
 - [ ] Real-world scripts: log parser, CSV processor, file renamer, simple HTTP client
-- [ ] Each example includes a header comment explaining what it demonstrates
+- [ ] TRACE: annotated examples showing each trace setting
 
 Milestone: newcomers can learn REXX by reading and running the examples directory.
 
-## Phase 14 — rexxlings (separate repo)
+## Phase 14 -- rexxlings (separate repo)
 
 Goal: an interactive REXX course modeled after [rustlings](https://github.com/rust-lang/rustlings).
 
