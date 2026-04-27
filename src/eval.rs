@@ -79,6 +79,25 @@ struct TraceSetting {
     interactive: bool,
 }
 
+impl Default for TraceSetting {
+    fn default() -> Self {
+        Self {
+            level: TraceLevel::Normal,
+            interactive: false,
+        }
+    }
+}
+
+impl fmt::Display for TraceSetting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.interactive {
+            write!(f, "?{}", self.level.letter())
+        } else {
+            write!(f, "{}", self.level.letter())
+        }
+    }
+}
+
 /// Result of parsing a trace setting string.
 enum TraceAction {
     /// "?" alone — toggle interactive mode, keep current level.
@@ -113,31 +132,17 @@ impl TraceAction {
     }
 }
 
-impl Default for TraceSetting {
-    fn default() -> Self {
-        Self {
-            level: TraceLevel::Normal,
-            interactive: false,
-        }
-    }
-}
-
-impl fmt::Display for TraceSetting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.interactive {
-            write!(f, "?{}", self.level.letter())
-        } else {
-            write!(f, "{}", self.level.letter())
-        }
-    }
-}
-
 /// Signal returned by clause/block execution for control flow.
 pub enum ExecSignal {
+    /// Clause executed normally — no control-flow change.
     Normal,
+    /// LEAVE: unwind the matching DO loop (`None` matches the innermost loop).
     Leave(Option<String>),
+    /// ITERATE: restart the matching DO loop (`None` matches the innermost loop).
     Iterate(Option<String>),
+    /// EXIT: unwind to the program's top level with an optional value.
     Exit(Option<RexxValue>),
+    /// RETURN: unwind to the caller with an optional value.
     Return(Option<RexxValue>),
     /// SIGNAL transfers control to a label, abandoning all blocks.
     Signal(String),
@@ -162,6 +167,18 @@ impl PendingExit {
     const fn is_pending(&self) -> bool {
         matches!(self, PendingExit::WithValue(_))
     }
+}
+
+/// What a DO loop should do with the signal returned by its body.
+///
+/// `Continue` — proceed with the loop's post-body work and iterate.
+/// `Break` — terminate the loop normally (matched LEAVE).
+/// `Propagate` — carry an unhandled signal outward (Exit/Return/Signal,
+/// or LEAVE/ITERATE targeting a different loop name).
+enum LoopAction {
+    Continue,
+    Break,
+    Propagate(ExecSignal),
 }
 
 /// A custom command handler for ADDRESS environments.
@@ -254,6 +271,7 @@ impl<'a> Evaluator<'a> {
         labels
     }
 
+    /// Run the program to completion, handling SIGNAL transfers internally.
     pub fn exec(&mut self) -> RexxResult<ExecSignal> {
         let mut start = 0;
         loop {
@@ -346,20 +364,10 @@ impl<'a> Evaluator<'a> {
                 Ok(signal)
             }
             Err(diag) => {
-                if let Some(label) = self.traps.get(&Condition::Syntax).cloned() {
-                    // Set RC to the error number
+                let desc = diag.detail.clone().unwrap_or_default();
+                if let Some(label) = self.fire_trap(&Condition::Syntax, desc) {
                     self.env
                         .set("RC", RexxValue::new(diag.error.number().to_string()));
-                    // Set condition info
-                    let desc = diag.detail.unwrap_or_default();
-                    self.env.set_condition_info(crate::env::ConditionInfoData {
-                        condition: "SYNTAX".to_string(),
-                        description: desc,
-                        instruction: "SIGNAL".to_string(),
-                        status: "ON".to_string(),
-                    });
-                    // Disable the trap (per REXX: trap fires once)
-                    self.traps.remove(&Condition::Syntax);
                     Ok(ExecSignal::Signal(label))
                 } else {
                     Err(diag)
@@ -545,7 +553,6 @@ impl<'a> Evaluator<'a> {
         }
 
         let rc = if let Some(rc) = custom_rc {
-            // Custom handler handled it
             self.env.set("RC", RexxValue::new(rc.to_string()));
             rc
         } else {
@@ -569,33 +576,16 @@ impl<'a> Evaluator<'a> {
             return self.fire_failure_trap(command);
         }
         if rc > 0
-            && let Some(label) = self.traps.get(&Condition::Error).cloned()
+            && let Some(label) = self.fire_trap(&Condition::Error, command.to_string())
         {
-            self.env.set_condition_info(crate::env::ConditionInfoData {
-                condition: "ERROR".to_string(),
-                description: command.to_string(),
-                instruction: "SIGNAL".to_string(),
-                status: "ON".to_string(),
-            });
-            self.traps.remove(&Condition::Error);
             return ExecSignal::Signal(label);
         }
         ExecSignal::Normal
     }
 
     fn fire_failure_trap(&mut self, command: &str) -> ExecSignal {
-        if let Some(label) = self.traps.get(&Condition::Failure).cloned() {
-            self.env.set_condition_info(crate::env::ConditionInfoData {
-                condition: "FAILURE".to_string(),
-                description: command.to_string(),
-                instruction: "SIGNAL".to_string(),
-                status: "ON".to_string(),
-            });
-            self.traps.remove(&Condition::Failure);
-            ExecSignal::Signal(label)
-        } else {
-            ExecSignal::Normal
-        }
+        self.fire_trap(&Condition::Failure, command.to_string())
+            .map_or(ExecSignal::Normal, ExecSignal::Signal)
     }
 
     // ── TRACE execution ────────────────────────────────────────────
@@ -809,32 +799,27 @@ impl<'a> Evaluator<'a> {
         name: &str,
         args: Vec<RexxValue>,
     ) -> RexxResult<Option<ExecSignal>> {
-        // 1. Resolve external file
         let source_dir = self.env.source_dir();
         let Some((program, path)) = crate::external::resolve_external(name, source_dir)? else {
             return Ok(None);
         };
 
-        // 2. Recursion guard
         if self.external_depth >= 100 {
             return Err(RexxDiagnostic::new(RexxError::ResourceExhausted)
                 .with_detail("external function call recursion depth limit exceeded"));
         }
         self.external_depth += 1;
 
-        // 3. Push isolated scope, set args
         self.env.push_procedure();
         self.arg_stack.push(args);
 
-        // 4. Update source_path so nested external calls resolve relative to this file
+        // Update source_path so nested external calls resolve relative to this file.
         let old_source_path = self.env.source_path().map(Path::to_path_buf);
         self.env.set_source_path(path);
 
-        // 5. Build labels for external program, execute via exec_interpret_body
         let ext_labels = Self::build_labels(&program);
         let result = self.exec_interpret_body(&program.clauses, &ext_labels);
 
-        // 6. Restore source_path, clean up scope
         match old_source_path {
             Some(old) => self.env.set_source_path(old),
             None => self.env.clear_source_path(),
@@ -935,17 +920,37 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    /// Uppercase REXX name for a condition (`ERROR`, `NOVALUE`, etc.).
+    const fn condition_name(condition: &Condition) -> &'static str {
+        match condition {
+            Condition::Error => "ERROR",
+            Condition::Failure => "FAILURE",
+            Condition::Halt => "HALT",
+            Condition::NoValue => "NOVALUE",
+            Condition::NotReady => "NOTREADY",
+            Condition::Syntax => "SYNTAX",
+            Condition::LostDigits => "LOSTDIGITS",
+        }
+    }
+
     /// Default label name for a condition (the condition name itself, uppercased).
     fn condition_default_label(condition: &Condition) -> String {
-        match condition {
-            Condition::Error => "ERROR".to_string(),
-            Condition::Failure => "FAILURE".to_string(),
-            Condition::Halt => "HALT".to_string(),
-            Condition::NoValue => "NOVALUE".to_string(),
-            Condition::NotReady => "NOTREADY".to_string(),
-            Condition::Syntax => "SYNTAX".to_string(),
-            Condition::LostDigits => "LOSTDIGITS".to_string(),
-        }
+        Self::condition_name(condition).to_string()
+    }
+
+    /// If a trap is registered for `condition`, record the condition info,
+    /// disable the trap (REXX traps fire once), and return the target label.
+    /// Returns `None` if no trap is active.
+    fn fire_trap(&mut self, condition: &Condition, description: String) -> Option<String> {
+        let label = self.traps.get(condition).cloned()?;
+        self.env.set_condition_info(crate::env::ConditionInfoData {
+            condition: Self::condition_name(condition).to_string(),
+            description,
+            instruction: "SIGNAL".to_string(),
+            status: "ON".to_string(),
+        });
+        self.traps.remove(condition);
+        Some(label)
     }
 
     /// ARG is shorthand for PARSE UPPER ARG.
@@ -1430,6 +1435,31 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    /// Map a body signal to a loop-control action, given this loop's optional name.
+    /// Centralizes the LEAVE/ITERATE/EXIT/RETURN/SIGNAL dispatch shared by all DO variants.
+    fn loop_signal_action(signal: ExecSignal, loop_name: Option<&String>) -> LoopAction {
+        match signal {
+            ExecSignal::Normal => LoopAction::Continue,
+            ExecSignal::Leave(ref name) => {
+                if Self::signal_matches(name.as_ref(), loop_name) {
+                    LoopAction::Break
+                } else {
+                    LoopAction::Propagate(signal)
+                }
+            }
+            ExecSignal::Iterate(ref name) => {
+                if Self::signal_matches(name.as_ref(), loop_name) {
+                    LoopAction::Continue
+                } else {
+                    LoopAction::Propagate(signal)
+                }
+            }
+            ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
+                LoopAction::Propagate(signal)
+            }
+        }
+    }
+
     fn exec_do(&mut self, block: &DoBlock) -> RexxResult<ExecSignal> {
         match &block.kind {
             DoKind::Simple => {
@@ -1447,23 +1477,10 @@ impl<'a> Evaluator<'a> {
     fn exec_do_forever(&mut self, block: &DoBlock) -> RexxResult<ExecSignal> {
         loop {
             let signal = self.exec_body(&block.body)?;
-            match signal {
-                ExecSignal::Normal => {}
-                ExecSignal::Leave(ref name) => {
-                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        return Ok(ExecSignal::Normal);
-                    }
-                    return Ok(signal);
-                }
-                ExecSignal::Iterate(ref name) => {
-                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        continue;
-                    }
-                    return Ok(signal);
-                }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
-                    return Ok(signal);
-                }
+            match Self::loop_signal_action(signal, block.name.as_ref()) {
+                LoopAction::Continue => {}
+                LoopAction::Break => return Ok(ExecSignal::Normal),
+                LoopAction::Propagate(s) => return Ok(s),
             }
         }
     }
@@ -1473,23 +1490,10 @@ impl<'a> Evaluator<'a> {
         let count = self.to_integer(&count_val)?;
         for _ in 0..count {
             let signal = self.exec_body(&block.body)?;
-            match signal {
-                ExecSignal::Normal => {}
-                ExecSignal::Leave(ref name) => {
-                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        return Ok(ExecSignal::Normal);
-                    }
-                    return Ok(signal);
-                }
-                ExecSignal::Iterate(ref name) => {
-                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        continue;
-                    }
-                    return Ok(signal);
-                }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
-                    return Ok(signal);
-                }
+            match Self::loop_signal_action(signal, block.name.as_ref()) {
+                LoopAction::Continue => {}
+                LoopAction::Break => return Ok(ExecSignal::Normal),
+                LoopAction::Propagate(s) => return Ok(s),
             }
         }
         Ok(ExecSignal::Normal)
@@ -1502,23 +1506,10 @@ impl<'a> Evaluator<'a> {
                 break;
             }
             let signal = self.exec_body(&block.body)?;
-            match signal {
-                ExecSignal::Normal => {}
-                ExecSignal::Leave(ref name) => {
-                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        return Ok(ExecSignal::Normal);
-                    }
-                    return Ok(signal);
-                }
-                ExecSignal::Iterate(ref name) => {
-                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        continue;
-                    }
-                    return Ok(signal);
-                }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
-                    return Ok(signal);
-                }
+            match Self::loop_signal_action(signal, block.name.as_ref()) {
+                LoopAction::Continue => {}
+                LoopAction::Break => return Ok(ExecSignal::Normal),
+                LoopAction::Propagate(s) => return Ok(s),
             }
         }
         Ok(ExecSignal::Normal)
@@ -1527,23 +1518,11 @@ impl<'a> Evaluator<'a> {
     fn exec_do_until(&mut self, cond_expr: &Expr, block: &DoBlock) -> RexxResult<ExecSignal> {
         loop {
             let signal = self.exec_body(&block.body)?;
-            match signal {
-                ExecSignal::Normal => {}
-                ExecSignal::Leave(ref name) => {
-                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        return Ok(ExecSignal::Normal);
-                    }
-                    return Ok(signal);
-                }
-                ExecSignal::Iterate(ref name) => {
-                    if !Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        return Ok(signal);
-                    }
-                    // ITERATE matched: continue to UNTIL check
-                }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
-                    return Ok(signal);
-                }
+            match Self::loop_signal_action(signal, block.name.as_ref()) {
+                // matched-ITERATE falls through to UNTIL check
+                LoopAction::Continue => {}
+                LoopAction::Break => return Ok(ExecSignal::Normal),
+                LoopAction::Propagate(s) => return Ok(s),
             }
             let cond_val = self.eval_expr(cond_expr)?;
             if to_logical(&cond_val)? {
@@ -1553,17 +1532,14 @@ impl<'a> Evaluator<'a> {
         Ok(ExecSignal::Normal)
     }
 
-    #[allow(clippy::too_many_lines)]
     fn exec_do_controlled(
         &mut self,
         ctrl: &ControlledLoop,
         block: &DoBlock,
     ) -> RexxResult<ExecSignal> {
-        // Evaluate start value
         let start_val = self.eval_expr(&ctrl.start)?;
         let start_num = self.to_number(&start_val)?;
 
-        // Evaluate TO limit
         let to_num = if let Some(ref to_expr) = ctrl.to {
             let v = self.eval_expr(to_expr)?;
             Some(self.to_number(&v)?)
@@ -1571,7 +1547,7 @@ impl<'a> Evaluator<'a> {
             None
         };
 
-        // Evaluate BY step (default 1)
+        // BY step defaults to 1 when omitted.
         let by_num = if let Some(ref by_expr) = ctrl.by {
             let v = self.eval_expr(by_expr)?;
             self.to_number(&v)?
@@ -1579,13 +1555,11 @@ impl<'a> Evaluator<'a> {
             BigDecimal::from(1)
         };
 
-        // REXX requires BY to be non-zero
         if by_num.is_zero() {
             return Err(RexxDiagnostic::new(RexxError::InvalidWholeNumber)
                 .with_detail("BY value in DO loop must not be zero"));
         }
 
-        // Evaluate FOR count
         let for_count = if let Some(ref for_expr) = ctrl.r#for {
             let v = self.eval_expr(for_expr)?;
             Some(self.to_integer(&v)?)
@@ -1593,7 +1567,6 @@ impl<'a> Evaluator<'a> {
             None
         };
 
-        // Set the control variable
         let mut current = start_num;
         let mut iterations: i64 = 0;
 
@@ -1611,20 +1584,17 @@ impl<'a> Evaluator<'a> {
                 }
             }
 
-            // Check FOR count
             if let Some(max) = for_count
                 && iterations >= max
             {
                 break;
             }
 
-            // Set control variable
             self.env.set(
                 &ctrl.var,
                 RexxValue::from_decimal(&current, self.settings.digits, self.settings.form),
             );
 
-            // Check WHILE condition
             if let Some(ref while_expr) = ctrl.while_cond {
                 let v = self.eval_expr(while_expr)?;
                 if !to_logical(&v)? {
@@ -1632,25 +1602,12 @@ impl<'a> Evaluator<'a> {
                 }
             }
 
-            // Execute body
             let signal = self.exec_body(&block.body)?;
-            match signal {
-                ExecSignal::Normal => {}
-                ExecSignal::Leave(ref name) => {
-                    if Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        return Ok(ExecSignal::Normal);
-                    }
-                    return Ok(signal);
-                }
-                ExecSignal::Iterate(ref name) => {
-                    if !Self::signal_matches(name.as_ref(), block.name.as_ref()) {
-                        return Ok(signal);
-                    }
-                    // ITERATE matched: fall through to increment
-                }
-                ExecSignal::Exit(_) | ExecSignal::Return(_) | ExecSignal::Signal(_) => {
-                    return Ok(signal);
-                }
+            match Self::loop_signal_action(signal, block.name.as_ref()) {
+                // matched-ITERATE falls through to UNTIL check + increment
+                LoopAction::Continue => {}
+                LoopAction::Break => return Ok(ExecSignal::Normal),
+                LoopAction::Propagate(s) => return Ok(s),
             }
 
             // Check UNTIL condition (after body, before increment).
@@ -1752,18 +1709,11 @@ impl<'a> Evaluator<'a> {
                 Ok(val)
             }
             Expr::Symbol(name) => {
+                // contains_key gate keeps `name.clone()` lazy in the common (no-trap) case.
                 if !self.env.is_set(name)
-                    && let Some(label) = self.traps.get(&Condition::NoValue).cloned()
+                    && self.traps.contains_key(&Condition::NoValue)
+                    && let Some(label) = self.fire_trap(&Condition::NoValue, name.clone())
                 {
-                    // Set condition info before firing
-                    self.env.set_condition_info(crate::env::ConditionInfoData {
-                        condition: "NOVALUE".to_string(),
-                        description: name.clone(),
-                        instruction: "SIGNAL".to_string(),
-                        status: "ON".to_string(),
-                    });
-                    // Disable the trap (fires once per REXX spec)
-                    self.traps.remove(&Condition::NoValue);
                     self.pending_signal = Some(label);
                 }
                 let val = self.env.get(name);
@@ -1772,17 +1722,14 @@ impl<'a> Evaluator<'a> {
             }
             Expr::Compound { stem, tail } => {
                 let resolved = self.resolve_tail(tail);
+                // contains_key gate keeps the format!() lazy in the common (no-trap) case.
                 if !self.env.is_compound_set(stem, &resolved)
-                    && let Some(label) = self.traps.get(&Condition::NoValue).cloned()
+                    && self.traps.contains_key(&Condition::NoValue)
+                    && let Some(label) = self.fire_trap(
+                        &Condition::NoValue,
+                        format!("{}.{}", stem.to_uppercase(), resolved),
+                    )
                 {
-                    let compound_name = format!("{}.{}", stem.to_uppercase(), resolved);
-                    self.env.set_condition_info(crate::env::ConditionInfoData {
-                        condition: "NOVALUE".to_string(),
-                        description: compound_name,
-                        instruction: "SIGNAL".to_string(),
-                        status: "ON".to_string(),
-                    });
-                    self.traps.remove(&Condition::NoValue);
                     self.pending_signal = Some(label);
                 }
                 let val = self.env.get_compound(stem, &resolved);
