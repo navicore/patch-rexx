@@ -140,6 +140,27 @@ rexx examples/parse_demo.rexx
 
 ---
 
+## Releasing
+
+Releases are automated by `.github/workflows/release.yml`. To cut a release:
+
+1. Create a GitHub release with a tag of the form `vX.Y.Z` (e.g. `v0.9.5`).
+2. The workflow then:
+   - bumps `[package].version` in `Cargo.toml` to match the tag (using a section-scoped `awk` so dependency `version = "..."` lines aren't touched),
+   - runs `cargo generate-lockfile`,
+   - commits the bump as `chore: bump version to X.Y.Z` (as `github-actions[bot]`) and pushes to `main`,
+   - verifies `Cargo.toml` matches the tag,
+   - publishes via `cargo publish --no-verify` (CI on Linux PRs and macOS main has already verified the build).
+
+Required repo secrets (Settings → Secrets and variables → Actions):
+
+- `PAT` — personal access token with `contents: write`, used to push the version bump back to `main`.
+- `CRATES_IO_TOKEN` — API token from <https://crates.io/settings/tokens>.
+
+A failed `cargo publish` (e.g. version already on crates.io) is downgraded to a workflow warning, not a hard failure.
+
+---
+
 ## Related Projects
 
 - [patch-seq](https://github.com/navicore/patch-seq) -- Seq, a concatenative language that compiles to native code via LLVM
