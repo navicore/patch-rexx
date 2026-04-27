@@ -127,33 +127,6 @@ impl Parser {
         }
     }
 
-    /// Check if the current token is THEN (stops implicit concat in conditions).
-    fn is_then_keyword(&self) -> bool {
-        if let TokenKind::Symbol(name) = self.peek_kind() {
-            Self::check_keyword(name, "THEN")
-        } else {
-            false
-        }
-    }
-
-    /// Check if the current token is ELSE (stops implicit concat in IF clauses).
-    fn is_else_keyword(&self) -> bool {
-        if let TokenKind::Symbol(name) = self.peek_kind() {
-            Self::check_keyword(name, "ELSE")
-        } else {
-            false
-        }
-    }
-
-    /// Check if the current token is WITH (stops implicit concat in PARSE VALUE).
-    fn is_with_keyword(&self) -> bool {
-        if let TokenKind::Symbol(name) = self.peek_kind() {
-            Self::check_keyword(name, "WITH")
-        } else {
-            false
-        }
-    }
-
     /// Check if the current token is a DO-header keyword that should stop
     /// implicit concatenation.
     fn is_do_header_keyword(&self) -> bool {
@@ -170,175 +143,88 @@ impl Parser {
 
     // ── clause parsing ──────────────────────────────────────────────
 
-    #[allow(clippy::too_many_lines)]
     fn parse_clause(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
 
-        // Look at the first token
         if let TokenKind::Symbol(ref name) = self.peek_kind().clone() {
-            // Symbol + Colon -> Label
+            // Symbol + Colon → Label
             if matches!(self.peek_at(1), TokenKind::Colon) {
                 let label = name.to_uppercase();
-                self.advance(); // symbol
-                self.advance(); // colon
+                self.advance();
+                self.advance();
                 return Ok(Clause {
                     kind: ClauseKind::Label(label),
                     loc,
                 });
             }
 
-            // Symbol + = -> Assignment
+            // Symbol + = → Assignment
             if matches!(self.peek_at(1), TokenKind::Assign) {
                 return self.parse_assignment(&loc);
             }
 
-            // SAY instruction
-            if Self::check_keyword(name, "SAY") {
-                self.advance(); // consume SAY
-                let expr = if self.is_terminator() {
-                    // SAY with no expression outputs empty line
-                    Expr::StringLit(String::new())
-                } else {
-                    self.parse_expression()?
-                };
-                return Ok(Clause {
-                    kind: ClauseKind::Say(expr),
-                    loc,
-                });
-            }
-
-            // NOP instruction
-            if Self::check_keyword(name, "NOP") {
-                self.advance();
-                return Ok(Clause {
-                    kind: ClauseKind::Nop,
-                    loc,
-                });
-            }
-
-            // IF instruction
-            if Self::check_keyword(name, "IF") {
-                return self.parse_if();
-            }
-
-            // DO instruction
-            if Self::check_keyword(name, "DO") {
-                return self.parse_do();
-            }
-
-            // SELECT instruction
-            if Self::check_keyword(name, "SELECT") {
-                return self.parse_select();
-            }
-
-            // LEAVE instruction
-            if Self::check_keyword(name, "LEAVE") {
-                return Ok(self.parse_leave());
-            }
-
-            // ITERATE instruction
-            if Self::check_keyword(name, "ITERATE") {
-                return Ok(self.parse_iterate());
-            }
-
-            // EXIT instruction
-            if Self::check_keyword(name, "EXIT") {
-                return self.parse_exit();
-            }
-
-            // RETURN instruction
-            if Self::check_keyword(name, "RETURN") {
-                return self.parse_return();
-            }
-
-            // CALL instruction
-            if Self::check_keyword(name, "CALL") {
-                return self.parse_call();
-            }
-
-            // PROCEDURE instruction
-            if Self::check_keyword(name, "PROCEDURE") {
-                return Ok(self.parse_procedure());
-            }
-
-            // PARSE instruction
-            if Self::check_keyword(name, "PARSE") {
-                return self.parse_parse();
-            }
-
-            // PULL instruction
-            if Self::check_keyword(name, "PULL") {
-                return self.parse_pull();
-            }
-
-            // ARG instruction
-            if Self::check_keyword(name, "ARG") {
-                return self.parse_arg();
-            }
-
-            // DROP instruction
-            if Self::check_keyword(name, "DROP") {
-                return Ok(self.parse_drop());
-            }
-
-            // SIGNAL instruction
-            if Self::check_keyword(name, "SIGNAL") {
-                return self.parse_signal();
-            }
-
-            // INTERPRET instruction
-            if Self::check_keyword(name, "INTERPRET") {
-                return self.parse_interpret();
-            }
-
-            // TRACE instruction
-            if Self::check_keyword(name, "TRACE") {
-                return self.parse_trace();
-            }
-
-            // NUMERIC instruction
-            if Self::check_keyword(name, "NUMERIC") {
-                return self.parse_numeric();
-            }
-
-            // PUSH instruction
-            if Self::check_keyword(name, "PUSH") {
-                return self.parse_push();
-            }
-
-            // QUEUE instruction
-            if Self::check_keyword(name, "QUEUE") {
-                return self.parse_queue();
-            }
-
-            // ADDRESS instruction
-            if Self::check_keyword(name, "ADDRESS") {
-                return self.parse_address();
-            }
-
-            // Stray END outside DO/SELECT
-            if Self::check_keyword(name, "END") {
-                return Err(RexxDiagnostic::new(RexxError::UnexpectedEnd)
-                    .at(loc)
-                    .with_detail("END without matching DO or SELECT"));
-            }
-
-            // Stray THEN/ELSE
-            if Self::check_keyword(name, "THEN") || Self::check_keyword(name, "ELSE") {
-                return Err(RexxDiagnostic::new(RexxError::UnexpectedThenElse)
-                    .at(loc)
-                    .with_detail(format!("unexpected {}", name.to_uppercase())));
-            }
-
-            // Stray WHEN/OTHERWISE
-            if Self::check_keyword(name, "WHEN") || Self::check_keyword(name, "OTHERWISE") {
-                return Err(RexxDiagnostic::new(RexxError::UnexpectedWhenOtherwise)
-                    .at(loc)
-                    .with_detail(format!("unexpected {}", name.to_uppercase())));
+            // Keyword dispatch.
+            match name.to_ascii_uppercase().as_str() {
+                "SAY" => {
+                    self.advance();
+                    // SAY with no expression outputs an empty line.
+                    let expr = if self.is_terminator() {
+                        Expr::StringLit(String::new())
+                    } else {
+                        self.parse_expression()?
+                    };
+                    return Ok(Clause {
+                        kind: ClauseKind::Say(expr),
+                        loc,
+                    });
+                }
+                "NOP" => {
+                    self.advance();
+                    return Ok(Clause {
+                        kind: ClauseKind::Nop,
+                        loc,
+                    });
+                }
+                "IF" => return self.parse_if(),
+                "DO" => return self.parse_do(),
+                "SELECT" => return self.parse_select(),
+                "LEAVE" => return Ok(self.parse_leave()),
+                "ITERATE" => return Ok(self.parse_iterate()),
+                "EXIT" => return self.parse_exit(),
+                "RETURN" => return self.parse_return(),
+                "CALL" => return self.parse_call(),
+                "PROCEDURE" => return Ok(self.parse_procedure()),
+                "PARSE" => return self.parse_parse(),
+                "PULL" => return self.parse_pull(),
+                "ARG" => return self.parse_arg(),
+                "DROP" => return Ok(self.parse_drop()),
+                "SIGNAL" => return self.parse_signal(),
+                "INTERPRET" => return self.parse_interpret(),
+                "TRACE" => return self.parse_trace(),
+                "NUMERIC" => return self.parse_numeric(),
+                "PUSH" => return self.parse_push(),
+                "QUEUE" => return self.parse_queue(),
+                "ADDRESS" => return self.parse_address(),
+                "END" => {
+                    return Err(RexxDiagnostic::new(RexxError::UnexpectedEnd)
+                        .at(loc)
+                        .with_detail("END without matching DO or SELECT"));
+                }
+                "THEN" | "ELSE" => {
+                    return Err(RexxDiagnostic::new(RexxError::UnexpectedThenElse)
+                        .at(loc)
+                        .with_detail(format!("unexpected {}", name.to_uppercase())));
+                }
+                "WHEN" | "OTHERWISE" => {
+                    return Err(RexxDiagnostic::new(RexxError::UnexpectedWhenOtherwise)
+                        .at(loc)
+                        .with_detail(format!("unexpected {}", name.to_uppercase())));
+                }
+                _ => {} // fall through to command-clause parsing
             }
         }
 
-        // Default: command clause (expression evaluated and discarded)
+        // Default: command clause (expression evaluated and discarded).
         let expr = self.parse_expression()?;
         Ok(Clause {
             kind: ClauseKind::Command(expr),
@@ -352,8 +238,8 @@ impl Parser {
         } else {
             unreachable!("parse_assignment called on non-symbol token")
         };
-        self.advance(); // symbol
-        self.advance(); // =
+        self.advance();
+        self.advance();
 
         let target = if name.contains('.') {
             // Compound variable: stem.tail
@@ -378,41 +264,37 @@ impl Parser {
     /// Parse: IF expr THEN clause [ELSE clause]
     fn parse_if(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume IF
+        self.advance();
 
-        // Parse condition expression (with THEN suppression)
+        // condition_depth suppresses implicit concat for THEN.
         self.condition_depth += 1;
         let condition = self.parse_expression()?;
         self.condition_depth -= 1;
 
-        // Skip terminators before THEN
         self.skip_terminators();
 
-        // Expect THEN keyword
         if !self.is_keyword("THEN") {
             return Err(RexxDiagnostic::new(RexxError::ExpectedThen)
                 .at(self.loc())
                 .with_detail("expected THEN after IF condition"));
         }
-        self.advance(); // consume THEN
+        self.advance();
 
-        // Skip terminators after THEN
         self.skip_terminators();
 
-        // Parse one clause for THEN branch (with ELSE suppression)
+        // if_depth suppresses implicit concat for ELSE in the THEN branch.
         self.if_depth += 1;
         let then_clause = Box::new(self.parse_clause()?);
 
-        // Check for ELSE: skip terminators and look for ELSE keyword
         let saved_pos = self.pos;
         self.skip_terminators();
         let else_clause = if self.is_keyword("ELSE") {
-            self.advance(); // consume ELSE
+            self.advance();
             self.skip_terminators();
             let clause = self.parse_clause()?;
             Some(Box::new(clause))
         } else {
-            // Restore position — those terminators might be meaningful
+            // Restore position — those terminators might be meaningful.
             self.pos = saved_pos;
             None
         };
@@ -428,78 +310,57 @@ impl Parser {
         })
     }
 
+    /// Build the tail of a DO clause: skip terminators, parse the body up to END,
+    /// then assemble the `Clause`.  Shared by every DO variant.
+    fn finish_do(
+        &mut self,
+        loc: SourceLoc,
+        kind: DoKind,
+        name: Option<String>,
+    ) -> RexxResult<Clause> {
+        self.skip_terminators();
+        let body = self.parse_do_body()?;
+        Ok(Clause {
+            kind: ClauseKind::Do(Box::new(DoBlock { kind, body, name })),
+            loc,
+        })
+    }
+
     /// Parse: DO [variant]; body; END [name]
     fn parse_do(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume DO
+        self.advance();
 
-        // Disambiguate variant
-        // 1. DO; ... END  (simple) — next is terminator
-        // 2. DO FOREVER   — next is Symbol("FOREVER")
-        // 3. DO WHILE expr — next is Symbol("WHILE")
-        // 4. DO UNTIL expr — next is Symbol("UNTIL")
-        // 5. DO var = start [TO..BY..FOR..WHILE..UNTIL] — next is Symbol, peek(+1) is =
-        // 6. DO expr — counted loop
+        // Disambiguate variant:
+        // 1. DO; ... END                                    — simple (next is terminator)
+        // 2. DO FOREVER                                     — next is Symbol("FOREVER")
+        // 3. DO WHILE expr                                  — next is Symbol("WHILE")
+        // 4. DO UNTIL expr                                  — next is Symbol("UNTIL")
+        // 5. DO var = start [TO..BY..FOR..WHILE..UNTIL]     — next is Symbol, peek(+1) is =
+        // 6. DO expr                                        — counted
 
         if self.is_terminator() {
-            // Simple DO block
-            self.skip_terminators();
-            let body = self.parse_do_body()?;
-            return Ok(Clause {
-                kind: ClauseKind::Do(Box::new(DoBlock {
-                    kind: DoKind::Simple,
-                    body,
-                    name: None,
-                })),
-                loc,
-            });
+            return self.finish_do(loc, DoKind::Simple, None);
         }
 
         if self.is_keyword("FOREVER") {
-            self.advance(); // consume FOREVER
-            self.skip_terminators();
-            let body = self.parse_do_body()?;
-            return Ok(Clause {
-                kind: ClauseKind::Do(Box::new(DoBlock {
-                    kind: DoKind::Forever,
-                    body,
-                    name: None,
-                })),
-                loc,
-            });
+            self.advance();
+            return self.finish_do(loc, DoKind::Forever, None);
         }
 
         if self.is_keyword("WHILE") {
-            self.advance(); // consume WHILE
+            self.advance();
             let cond = self.parse_expression()?;
-            self.skip_terminators();
-            let body = self.parse_do_body()?;
-            return Ok(Clause {
-                kind: ClauseKind::Do(Box::new(DoBlock {
-                    kind: DoKind::While(cond),
-                    body,
-                    name: None,
-                })),
-                loc,
-            });
+            return self.finish_do(loc, DoKind::While(cond), None);
         }
 
         if self.is_keyword("UNTIL") {
-            self.advance(); // consume UNTIL
+            self.advance();
             let cond = self.parse_expression()?;
-            self.skip_terminators();
-            let body = self.parse_do_body()?;
-            return Ok(Clause {
-                kind: ClauseKind::Do(Box::new(DoBlock {
-                    kind: DoKind::Until(cond),
-                    body,
-                    name: None,
-                })),
-                loc,
-            });
+            return self.finish_do(loc, DoKind::Until(cond), None);
         }
 
-        // Check for controlled loop: Symbol followed by =
+        // Controlled loop: Symbol followed by =
         if let TokenKind::Symbol(_) = self.peek_kind()
             && matches!(self.peek_at(1), TokenKind::Assign)
         {
@@ -508,29 +369,38 @@ impl Parser {
 
         // Counted DO: DO expr
         let count_expr = self.parse_expression()?;
-        self.skip_terminators();
-        let body = self.parse_do_body()?;
-        Ok(Clause {
-            kind: ClauseKind::Do(Box::new(DoBlock {
-                kind: DoKind::Count(count_expr),
-                body,
-                name: None,
-            })),
-            loc,
-        })
+        self.finish_do(loc, DoKind::Count(count_expr), None)
+    }
+
+    /// If the current token is `kw` and `slot` is empty, consume the keyword and
+    /// store the next expression in `slot`.  Returns `Ok(true)` if consumed,
+    /// `Ok(false)` if the keyword wasn't there, `Err` if `kw` would be a
+    /// duplicate (REXX Error 27).
+    fn consume_unique_keyword(&mut self, kw: &str, slot: &mut Option<Expr>) -> RexxResult<bool> {
+        if !self.is_keyword(kw) {
+            return Ok(false);
+        }
+        if slot.is_some() {
+            return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
+                .at(self.loc())
+                .with_detail(format!("duplicate {kw} in DO instruction")));
+        }
+        self.advance();
+        *slot = Some(self.parse_expression()?);
+        Ok(true)
     }
 
     /// Parse controlled DO: DO var = start [TO limit] [BY step] [FOR count] [WHILE cond] [UNTIL cond]
     fn parse_controlled_do(&mut self, loc: SourceLoc) -> RexxResult<Clause> {
-        let var_name = if let TokenKind::Symbol(s) = self.peek_kind() {
-            s.to_uppercase()
-        } else {
-            unreachable!()
+        let TokenKind::Symbol(s) = self.peek_kind() else {
+            unreachable!("parse_controlled_do called on non-symbol token");
         };
-        self.advance(); // consume variable name
-        self.advance(); // consume =
+        let var_name = s.to_uppercase();
+        self.advance(); // variable name
+        self.advance(); // =
 
-        // Parse start expression with do_header_depth guard
+        // Parse start expression with do_header_depth guard so that
+        // TO/BY/FOR/WHILE/UNTIL aren't consumed by implicit concatenation.
         self.do_header_depth += 1;
         let start = self.parse_expression()?;
 
@@ -540,75 +410,41 @@ impl Parser {
         let mut while_cond: Option<Expr> = None;
         let mut until_cond: Option<Expr> = None;
 
-        // Parse optional TO/BY/FOR/WHILE/UNTIL in any order.
-        // Duplicate keywords are rejected per REXX (Error 27).
+        // Optional TO/BY/FOR/WHILE/UNTIL in any order; duplicates are rejected.
         loop {
-            if self.is_keyword("TO") {
-                if to.is_some() {
-                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
-                        .at(self.loc())
-                        .with_detail("duplicate TO in DO instruction"));
-                }
-                self.advance();
-                to = Some(self.parse_expression()?);
-            } else if self.is_keyword("BY") {
-                if by.is_some() {
-                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
-                        .at(self.loc())
-                        .with_detail("duplicate BY in DO instruction"));
-                }
-                self.advance();
-                by = Some(self.parse_expression()?);
-            } else if self.is_keyword("FOR") {
-                if r#for.is_some() {
-                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
-                        .at(self.loc())
-                        .with_detail("duplicate FOR in DO instruction"));
-                }
-                self.advance();
-                r#for = Some(self.parse_expression()?);
-            } else if self.is_keyword("WHILE") {
-                if while_cond.is_some() {
-                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
-                        .at(self.loc())
-                        .with_detail("duplicate WHILE in DO instruction"));
-                }
-                self.advance();
-                while_cond = Some(self.parse_expression()?);
-            } else if self.is_keyword("UNTIL") {
-                if until_cond.is_some() {
-                    return Err(RexxDiagnostic::new(RexxError::InvalidDoSyntax)
-                        .at(self.loc())
-                        .with_detail("duplicate UNTIL in DO instruction"));
-                }
-                self.advance();
-                until_cond = Some(self.parse_expression()?);
-            } else {
-                break;
+            if self.consume_unique_keyword("TO", &mut to)? {
+                continue;
             }
+            if self.consume_unique_keyword("BY", &mut by)? {
+                continue;
+            }
+            if self.consume_unique_keyword("FOR", &mut r#for)? {
+                continue;
+            }
+            if self.consume_unique_keyword("WHILE", &mut while_cond)? {
+                continue;
+            }
+            if self.consume_unique_keyword("UNTIL", &mut until_cond)? {
+                continue;
+            }
+            break;
         }
 
         self.do_header_depth -= 1;
 
-        self.skip_terminators();
-        let body = self.parse_do_body()?;
-
-        Ok(Clause {
-            kind: ClauseKind::Do(Box::new(DoBlock {
-                kind: DoKind::Controlled(Box::new(ControlledLoop {
-                    var: var_name.clone(),
-                    start,
-                    to,
-                    by,
-                    r#for,
-                    while_cond,
-                    until_cond,
-                })),
-                body,
-                name: Some(var_name),
-            })),
+        self.finish_do(
             loc,
-        })
+            DoKind::Controlled(Box::new(ControlledLoop {
+                var: var_name.clone(),
+                start,
+                to,
+                by,
+                r#for,
+                while_cond,
+                until_cond,
+            })),
+            Some(var_name),
+        )
     }
 
     /// Parse DO body: clauses until END [name]
@@ -622,12 +458,12 @@ impl Parser {
                     .with_detail("expected END to close DO block"));
             }
             if self.is_keyword("END") {
-                self.advance(); // consume END
-                // Optionally consume a symbol after END (e.g., END i)
+                self.advance();
+                // Optionally consume a loop name after END (e.g., `END i`).
                 if let TokenKind::Symbol(_) = self.peek_kind()
                     && !self.is_terminator()
                 {
-                    self.advance(); // consume the name after END
+                    self.advance();
                 }
                 break;
             }
@@ -640,7 +476,7 @@ impl Parser {
     /// Parse: SELECT; WHEN expr THEN clause...; ... [OTHERWISE; clause...;] END
     fn parse_select(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume SELECT
+        self.advance();
         self.skip_terminators();
 
         let mut when_clauses: Vec<(Expr, Vec<Clause>)> = Vec::new();
@@ -656,12 +492,12 @@ impl Parser {
             }
 
             if self.is_keyword("END") {
-                self.advance(); // consume END
+                self.advance();
                 break;
             }
 
             if self.is_keyword("WHEN") {
-                self.advance(); // consume WHEN
+                self.advance();
                 self.condition_depth += 1;
                 let condition = self.parse_expression()?;
                 self.condition_depth -= 1;
@@ -672,10 +508,9 @@ impl Parser {
                         .at(self.loc())
                         .with_detail("expected THEN after WHEN condition"));
                 }
-                self.advance(); // consume THEN
+                self.advance();
                 self.skip_terminators();
 
-                // Parse one or more clauses for this WHEN
                 let mut body = Vec::new();
                 loop {
                     if self.at_end()
@@ -693,7 +528,7 @@ impl Parser {
             }
 
             if self.is_keyword("OTHERWISE") {
-                self.advance(); // consume OTHERWISE
+                self.advance();
                 self.skip_terminators();
 
                 let mut body = Vec::new();
@@ -725,7 +560,7 @@ impl Parser {
     /// Parse: LEAVE [name]
     fn parse_leave(&mut self) -> Clause {
         let loc = self.loc();
-        self.advance(); // consume LEAVE
+        self.advance();
         let name = self.try_consume_symbol_name();
         Clause {
             kind: ClauseKind::Leave(name),
@@ -736,7 +571,7 @@ impl Parser {
     /// Parse: ITERATE [name]
     fn parse_iterate(&mut self) -> Clause {
         let loc = self.loc();
-        self.advance(); // consume ITERATE
+        self.advance();
         let name = self.try_consume_symbol_name();
         Clause {
             kind: ClauseKind::Iterate(name),
@@ -758,15 +593,21 @@ impl Parser {
         }
     }
 
+    /// Parse an optional trailing expression: returns `None` if the next token
+    /// is a clause terminator, otherwise `Some(parse_expression()?)`.
+    fn parse_optional_expression(&mut self) -> RexxResult<Option<Expr>> {
+        if self.is_terminator() {
+            Ok(None)
+        } else {
+            Ok(Some(self.parse_expression()?))
+        }
+    }
+
     /// Parse: EXIT [expr]
     fn parse_exit(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume EXIT
-        let expr = if self.is_terminator() {
-            None
-        } else {
-            Some(self.parse_expression()?)
-        };
+        self.advance();
+        let expr = self.parse_optional_expression()?;
         Ok(Clause {
             kind: ClauseKind::Exit(expr),
             loc,
@@ -776,12 +617,8 @@ impl Parser {
     /// Parse: RETURN [expr]
     fn parse_return(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume RETURN
-        let expr = if self.is_terminator() {
-            None
-        } else {
-            Some(self.parse_expression()?)
-        };
+        self.advance();
+        let expr = self.parse_optional_expression()?;
         Ok(Clause {
             kind: ClauseKind::Return(expr),
             loc,
@@ -791,9 +628,8 @@ impl Parser {
     /// Parse: CALL name [expr [, expr]...]
     fn parse_call(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume CALL
+        self.advance();
 
-        // Read routine name
         let name = if let TokenKind::Symbol(s) = self.peek_kind() {
             let n = s.to_uppercase();
             self.advance();
@@ -804,12 +640,11 @@ impl Parser {
                 .with_detail("expected routine name after CALL"));
         };
 
-        // Parse optional comma-separated arguments
         let mut args = Vec::new();
         if !self.is_terminator() {
             args.push(self.parse_expression()?);
             while matches!(self.peek_kind(), TokenKind::Comma) {
-                self.advance(); // consume comma
+                self.advance();
                 args.push(self.parse_expression()?);
             }
         }
@@ -823,10 +658,10 @@ impl Parser {
     /// Parse: PROCEDURE [EXPOSE name [name...]]
     fn parse_procedure(&mut self) -> Clause {
         let loc = self.loc();
-        self.advance(); // consume PROCEDURE
+        self.advance();
 
         let expose = if self.is_keyword("EXPOSE") {
-            self.advance(); // consume EXPOSE
+            self.advance();
             let mut names = Vec::new();
             while !self.is_terminator() {
                 if let TokenKind::Symbol(s) = self.peek_kind() {
@@ -870,7 +705,7 @@ impl Parser {
                     self.advance();
                 }
                 TokenKind::Plus => {
-                    self.advance(); // consume +
+                    self.advance();
                     if let TokenKind::Number(n) = self.peek_kind().clone() {
                         self.advance();
                         let val: i32 = n.parse().map_err(|_| {
@@ -886,7 +721,7 @@ impl Parser {
                     }
                 }
                 TokenKind::Minus => {
-                    self.advance(); // consume -
+                    self.advance();
                     if let TokenKind::Number(n) = self.peek_kind().clone() {
                         self.advance();
                         let val: i32 = n.parse().map_err(|_| {
@@ -902,10 +737,10 @@ impl Parser {
                     }
                 }
                 TokenKind::LeftParen => {
-                    self.advance(); // consume (
+                    self.advance();
                     if let TokenKind::Symbol(name) = self.peek_kind().clone() {
                         let var_name = name.to_uppercase();
-                        self.advance(); // consume symbol
+                        self.advance();
                         let err_loc = self.loc();
                         self.expect(&TokenKind::RightParen).map_err(|_| {
                             RexxDiagnostic::new(RexxError::InvalidTemplate)
@@ -932,9 +767,8 @@ impl Parser {
     /// Parse: PARSE [UPPER] source template
     fn parse_parse(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume PARSE
+        self.advance();
 
-        // Check for UPPER
         let upper = if self.is_keyword("UPPER") {
             self.advance();
             true
@@ -942,7 +776,6 @@ impl Parser {
             false
         };
 
-        // Dispatch on source keyword
         let source = if self.is_keyword("ARG") {
             self.advance();
             ParseSource::Arg
@@ -975,13 +808,12 @@ impl Parser {
             let expr = self.parse_expression();
             self.parse_value_depth -= 1;
             let expr = expr?;
-            // Expect WITH keyword
-            if !self.is_with_keyword() {
+            if !self.is_keyword("WITH") {
                 return Err(RexxDiagnostic::new(RexxError::InvalidSubKeyword)
                     .at(self.loc())
                     .with_detail("expected WITH after PARSE VALUE expression"));
             }
-            self.advance(); // consume WITH
+            self.advance();
             ParseSource::Value(expr)
         } else {
             return Err(RexxDiagnostic::new(RexxError::InvalidSubKeyword)
@@ -1010,7 +842,7 @@ impl Parser {
     /// Parse: PULL [template]
     fn parse_pull(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume PULL
+        self.advance();
 
         let template = if self.is_terminator() {
             None
@@ -1027,7 +859,7 @@ impl Parser {
     /// Parse: ARG [template]
     fn parse_arg(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume ARG
+        self.advance();
         let template = if self.is_terminator() {
             ParseTemplate { elements: vec![] }
         } else {
@@ -1042,7 +874,7 @@ impl Parser {
     /// Parse: DROP name [name...]
     fn parse_drop(&mut self) -> Clause {
         let loc = self.loc();
-        self.advance(); // consume DROP
+        self.advance();
 
         let mut names = Vec::new();
         while !self.is_terminator() {
@@ -1065,13 +897,13 @@ impl Parser {
     /// Parse: SIGNAL label | SIGNAL VALUE expr | SIGNAL ON condition [NAME label] | SIGNAL OFF condition
     fn parse_signal(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume SIGNAL
+        self.advance();
 
         if self.is_keyword("ON") {
-            self.advance(); // consume ON
+            self.advance();
             let condition = self.parse_condition()?;
             let name = if self.is_keyword("NAME") {
-                self.advance(); // consume NAME
+                self.advance();
                 if let TokenKind::Symbol(s) = self.peek_kind() {
                     let n = s.to_uppercase();
                     self.advance();
@@ -1091,7 +923,7 @@ impl Parser {
         }
 
         if self.is_keyword("OFF") {
-            self.advance(); // consume OFF
+            self.advance();
             let condition = self.parse_condition()?;
             return Ok(Clause {
                 kind: ClauseKind::Signal(SignalAction::Off(condition)),
@@ -1100,7 +932,7 @@ impl Parser {
         }
 
         if self.is_keyword("VALUE") {
-            self.advance(); // consume VALUE
+            self.advance();
             let expr = self.parse_expression()?;
             return Ok(Clause {
                 kind: ClauseKind::Signal(SignalAction::Value(expr)),
@@ -1108,7 +940,7 @@ impl Parser {
             });
         }
 
-        // SIGNAL label — must be a symbol
+        // SIGNAL label — must be a symbol.
         if let TokenKind::Symbol(s) = self.peek_kind() {
             let label = s.to_uppercase();
             self.advance();
@@ -1157,7 +989,7 @@ impl Parser {
     /// Parse: TRACE [setting]
     fn parse_trace(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume TRACE
+        self.advance();
         let expr = if self.is_terminator() {
             Expr::StringLit("N".to_string())
         } else {
@@ -1174,7 +1006,7 @@ impl Parser {
     /// Parse: INTERPRET expr
     fn parse_interpret(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume INTERPRET
+        self.advance();
         let expr = if self.is_terminator() {
             Expr::StringLit(String::new())
         } else {
@@ -1191,9 +1023,9 @@ impl Parser {
     /// Parse: ADDRESS [env [command]] | ADDRESS VALUE expr | ADDRESS (swap)
     fn parse_address(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume ADDRESS
+        self.advance();
 
-        // Bare ADDRESS → swap default ↔ previous
+        // Bare ADDRESS → swap default ↔ previous.
         if self.is_terminator() {
             return Ok(Clause {
                 kind: ClauseKind::Address(AddressAction::SetEnvironment(String::new())),
@@ -1201,9 +1033,9 @@ impl Parser {
             });
         }
 
-        // ADDRESS VALUE expr → dynamic environment name
+        // ADDRESS VALUE expr → dynamic environment name.
         if self.is_keyword("VALUE") {
-            self.advance(); // consume VALUE
+            self.advance();
             let expr = self.parse_expression()?;
             return Ok(Clause {
                 kind: ClauseKind::Address(AddressAction::Value(expr)),
@@ -1214,17 +1046,17 @@ impl Parser {
         // ADDRESS env [command]
         if let TokenKind::Symbol(name) = self.peek_kind().clone() {
             let env_name = name.to_uppercase();
-            self.advance(); // consume environment name
+            self.advance();
 
             if self.is_terminator() {
-                // ADDRESS env — set default
+                // ADDRESS env — set default.
                 return Ok(Clause {
                     kind: ClauseKind::Address(AddressAction::SetEnvironment(env_name)),
                     loc,
                 });
             }
 
-            // ADDRESS env command — one-shot
+            // ADDRESS env command — one-shot.
             let command = self.parse_expression()?;
             return Ok(Clause {
                 kind: ClauseKind::Address(AddressAction::Temporary {
@@ -1245,15 +1077,11 @@ impl Parser {
     /// Parse: NUMERIC DIGITS [expr] | NUMERIC FORM ... | NUMERIC FUZZ [expr]
     fn parse_numeric(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume NUMERIC
+        self.advance();
 
         if self.is_keyword("DIGITS") {
-            self.advance(); // consume DIGITS
-            let expr = if self.is_terminator() {
-                None
-            } else {
-                Some(self.parse_expression()?)
-            };
+            self.advance();
+            let expr = self.parse_optional_expression()?;
             return Ok(Clause {
                 kind: ClauseKind::Numeric(NumericSetting::Digits(expr)),
                 loc,
@@ -1261,7 +1089,7 @@ impl Parser {
         }
 
         if self.is_keyword("FORM") {
-            self.advance(); // consume FORM
+            self.advance();
             let form = if self.is_keyword("SCIENTIFIC") {
                 self.advance();
                 NumericFormSetting::Scientific
@@ -1273,7 +1101,7 @@ impl Parser {
                 let expr = self.parse_expression()?;
                 NumericFormSetting::Value(expr)
             } else if self.is_terminator() {
-                // Bare "NUMERIC FORM" defaults to SCIENTIFIC
+                // Bare "NUMERIC FORM" defaults to SCIENTIFIC.
                 NumericFormSetting::Scientific
             } else {
                 let expr = self.parse_expression()?;
@@ -1286,12 +1114,8 @@ impl Parser {
         }
 
         if self.is_keyword("FUZZ") {
-            self.advance(); // consume FUZZ
-            let expr = if self.is_terminator() {
-                None
-            } else {
-                Some(self.parse_expression()?)
-            };
+            self.advance();
+            let expr = self.parse_optional_expression()?;
             return Ok(Clause {
                 kind: ClauseKind::Numeric(NumericSetting::Fuzz(expr)),
                 loc,
@@ -1308,12 +1132,8 @@ impl Parser {
     /// Parse: PUSH [expr]
     fn parse_push(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume PUSH
-        let expr = if self.is_terminator() {
-            None
-        } else {
-            Some(self.parse_expression()?)
-        };
+        self.advance();
+        let expr = self.parse_optional_expression()?;
         Ok(Clause {
             kind: ClauseKind::Push(expr),
             loc,
@@ -1323,12 +1143,8 @@ impl Parser {
     /// Parse: QUEUE [expr]
     fn parse_queue(&mut self) -> RexxResult<Clause> {
         let loc = self.loc();
-        self.advance(); // consume QUEUE
-        let expr = if self.is_terminator() {
-            None
-        } else {
-            Some(self.parse_expression()?)
-        };
+        self.advance();
+        let expr = self.parse_optional_expression()?;
         Ok(Clause {
             kind: ClauseKind::Queue(expr),
             loc,
@@ -1443,21 +1259,16 @@ impl Parser {
                 break;
             }
 
-            // When inside a condition (IF/WHEN), suppress implicit concatenation
-            // for THEN so it can be consumed by the control flow parser.
-            if self.condition_depth > 0 && self.is_then_keyword() {
+            // Suppress implicit concatenation for context-sensitive keywords so
+            // they reach the relevant outer parser (THEN for IF/WHEN, ELSE for
+            // IF, WITH for PARSE VALUE).
+            if self.condition_depth > 0 && self.is_keyword("THEN") {
                 break;
             }
-
-            // When inside an IF, suppress implicit concatenation for ELSE
-            // so it can be consumed by the IF parser.
-            if self.if_depth > 0 && self.is_else_keyword() {
+            if self.if_depth > 0 && self.is_keyword("ELSE") {
                 break;
             }
-
-            // When inside PARSE VALUE, suppress implicit concatenation for WITH
-            // so it can be consumed by the PARSE parser.
-            if self.parse_value_depth > 0 && self.is_with_keyword() {
+            if self.parse_value_depth > 0 && self.is_keyword("WITH") {
                 break;
             }
 
@@ -1651,7 +1462,7 @@ impl Parser {
                 Ok(Expr::Symbol(name.to_uppercase()))
             }
             TokenKind::LeftParen => {
-                self.advance(); // (
+                self.advance();
                 let expr = self.parse_expression()?;
                 let err_loc = self.loc();
                 self.expect(&TokenKind::RightParen).map_err(|_| {
@@ -1668,7 +1479,7 @@ impl Parser {
     }
 
     fn parse_function_call(&mut self, name: &str) -> RexxResult<Expr> {
-        self.advance(); // (
+        self.advance();
         let mut args = Vec::new();
         if !matches!(self.peek_kind(), TokenKind::RightParen) {
             args.push(self.parse_expression()?);
