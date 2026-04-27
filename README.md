@@ -59,7 +59,7 @@ See [ROADMAP.md](ROADMAP.md) for the phase-by-phase development plan and remaini
 
 ## Building
 
-Requires Rust edition 2024 toolchain.
+Requires Rust edition 2024 toolchain. The exact compiler version is pinned in `rust-toolchain.toml`; `rustup` will pick it up automatically when you `cd` into the repo.
 
 ```bash
 cargo build --release
@@ -72,6 +72,23 @@ To build with Language Server support:
 ```bash
 cargo build --release --features lsp
 ```
+
+## Development (`just`)
+
+The `justfile` is the single source of truth for build, lint, and test. Both local dev and GitHub Actions call the same recipes — no drift.
+
+```bash
+just ci          # what CI runs: fmt-check, lint, test, build
+just fmt         # format the workspace
+just fmt-check   # verify formatting
+just lint        # cargo clippy --locked --workspace --all-targets -- -D warnings
+just test        # cargo test --locked --workspace --all-targets
+just build       # cargo build --locked --release
+just install     # cargo install --path . --locked --force  (installs `rexx` into ~/.cargo/bin)
+just clean       # cargo clean
+```
+
+Run `just ci` before pushing — it runs exactly what CI runs, so a green local run means a green CI run.
 
 ## Usage
 

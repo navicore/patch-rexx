@@ -1,3 +1,4 @@
+# This workflow ONLY calls `just` commands. The justfile is the source of truth.
 name: CI - Linux
 
 on:
@@ -13,10 +14,13 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
 
+    - name: Install just
+      uses: extractions/setup-just@v2
+
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@master
       with:
-        toolchain: 1.93.0
+        toolchain: 1.95.0
         components: rustfmt, clippy
 
     - name: Verify Rust version
@@ -34,14 +38,5 @@ jobs:
         path: ~/.cargo/git
         key: linux-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Check formatting
-      run: cargo fmt -- --check
-
-    - name: Clippy (deny warnings)
-      run: cargo clippy --all-targets -- -D warnings
-
-    - name: Build
-      run: cargo build --all-targets
-
-    - name: Test
-      run: cargo test
+    - name: Run CI
+      run: just ci
