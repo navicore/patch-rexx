@@ -284,6 +284,24 @@ fn duplicate_by_keyword_error() {
     assert!(stderr.contains("Error 27"));
 }
 
+#[test]
+fn duplicate_for_keyword_error() {
+    let stderr = run_rexx_fail("do i = 1 for 3 for 2; say i; end");
+    assert!(stderr.contains("Error 27"));
+}
+
+#[test]
+fn duplicate_while_keyword_error() {
+    let stderr = run_rexx_fail("do i = 1 to 10 while 1 while 0; say i; end");
+    assert!(stderr.contains("Error 27"));
+}
+
+#[test]
+fn duplicate_until_keyword_error() {
+    let stderr = run_rexx_fail("do i = 1 to 10 until 0 until 1; say i; end");
+    assert!(stderr.contains("Error 27"));
+}
+
 // ── ITERATE in DO UNTIL ───────────────────────────────────────
 // Per ANSI REXX, ITERATE skips to the UNTIL check (not back to
 // the top). If UNTIL is false, the body runs again.
