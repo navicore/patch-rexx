@@ -1,3 +1,8 @@
+<!-- ghmig:moved -->
+> **This repository has moved to [https://git.navicore.tech/navicore/patch-rexx](https://git.navicore.tech/navicore/patch-rexx).**
+>
+> The GitHub copy is archived and no longer maintained.
+
 [![CI - Linux](https://github.com/navicore/patch-rexx/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/navicore/patch-rexx/actions/workflows/ci-linux.yml)
 [![CI - macOS](https://github.com/navicore/patch-rexx/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/navicore/patch-rexx/actions/workflows/ci-macos.yml)
 
