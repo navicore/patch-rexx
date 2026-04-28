@@ -399,7 +399,7 @@ impl Parser {
         name: Option<String>,
     ) -> RexxResult<Clause> {
         self.skip_terminators();
-        let body = self.parse_do_body()?;
+        let body = self.parse_do_body(name.as_deref())?;
         Ok(Clause {
             kind: ClauseKind::Do(Box::new(DoBlock { kind, body, name })),
             loc,
@@ -528,7 +528,7 @@ impl Parser {
     }
 
     /// Parse DO body: clauses until END [name]
-    fn parse_do_body(&mut self) -> RexxResult<Vec<Clause>> {
+    fn parse_do_body(&mut self, loop_name: Option<&str>) -> RexxResult<Vec<Clause>> {
         let mut body = Vec::new();
         self.skip_terminators();
         loop {
@@ -539,11 +539,34 @@ impl Parser {
             }
             if self.is_keyword("END") {
                 self.advance();
-                // Optionally consume a loop name after END (e.g., `END i`).
-                // (Spec-correct match against the DO's control variable is
-                // tracked separately — see docs/design/end-name-validation.md.)
-                if let TokenKind::Symbol(_) = self.peek_kind() {
-                    self.advance();
+                // If a name follows END, it must match the DO's control variable.
+                // (ANSI X3.274-1996 §6.6.6, Error 21.)
+                let end_symbol: Option<String> = if let TokenKind::Symbol(s) = self.peek_kind() {
+                    Some(s.clone())
+                } else {
+                    None
+                };
+                if let Some(s) = end_symbol {
+                    let end_loc = self.loc();
+                    match loop_name {
+                        Some(n) if n.eq_ignore_ascii_case(&s) => {
+                            self.advance();
+                        }
+                        Some(n) => {
+                            return Err(RexxDiagnostic::new(RexxError::InvalidDataOnEnd)
+                                .at(end_loc)
+                                .with_detail(format!(
+                                    "END name '{s}' does not match DO control variable '{n}'"
+                                )));
+                        }
+                        None => {
+                            return Err(RexxDiagnostic::new(RexxError::InvalidDataOnEnd)
+                                .at(end_loc)
+                                .with_detail(format!(
+                                    "END name '{s}' but this DO has no control variable"
+                                )));
+                        }
+                    }
                 }
                 break;
             }
@@ -573,6 +596,13 @@ impl Parser {
 
             if self.is_keyword("END") {
                 self.advance();
+                // SELECT's END takes no name (ANSI X3.274-1996 §6.6.6, Error 21).
+                if let TokenKind::Symbol(s) = self.peek_kind() {
+                    let s = s.clone();
+                    return Err(RexxDiagnostic::new(RexxError::InvalidDataOnEnd)
+                        .at(self.loc())
+                        .with_detail(format!("END name '{s}' but SELECT does not take a name")));
+                }
                 break;
             }
 
@@ -1868,5 +1898,70 @@ mod tests {
     fn parse_exit_with_expr() {
         let prog = parse("exit 0");
         assert!(matches!(&prog.clauses[0].kind, ClauseKind::Exit(Some(_))));
+    }
+
+    // ── END-name validation (ANSI X3.274-1996 §6.6.6, Error 21) ──────
+
+    fn parse_result(src: &str) -> RexxResult<Program> {
+        let mut lexer = Lexer::new(src);
+        let tokens = lexer.tokenize().unwrap();
+        Parser::new(tokens).parse()
+    }
+
+    #[test]
+    fn end_name_matches_controlled_do_var() {
+        // `end i` matches `do i = ...` — accepted.
+        assert!(parse_result("do i = 1 to 5; nop; end i").is_ok());
+    }
+
+    #[test]
+    fn end_name_match_is_case_insensitive() {
+        // `end I` for `do i = ...` — accepted (REXX is case-insensitive).
+        assert!(parse_result("do i = 1 to 5; nop; end I").is_ok());
+    }
+
+    #[test]
+    fn end_name_mismatch_on_controlled_do_errors() {
+        let err = parse_result("do i = 1 to 5; nop; end j").unwrap_err();
+        assert_eq!(err.error, RexxError::InvalidDataOnEnd);
+    }
+
+    #[test]
+    fn bare_end_on_controlled_do_ok() {
+        assert!(parse_result("do i = 1 to 5; nop; end").is_ok());
+    }
+
+    #[test]
+    fn end_name_on_simple_do_errors() {
+        let err = parse_result("do; nop; end x").unwrap_err();
+        assert_eq!(err.error, RexxError::InvalidDataOnEnd);
+    }
+
+    #[test]
+    fn end_name_on_count_do_errors() {
+        let err = parse_result("do 5; nop; end x").unwrap_err();
+        assert_eq!(err.error, RexxError::InvalidDataOnEnd);
+    }
+
+    #[test]
+    fn end_name_on_forever_do_errors() {
+        let err = parse_result("do forever; leave; end x").unwrap_err();
+        assert_eq!(err.error, RexxError::InvalidDataOnEnd);
+    }
+
+    #[test]
+    fn bare_end_on_while_do_ok() {
+        assert!(parse_result("do while 1; leave; end").is_ok());
+    }
+
+    #[test]
+    fn bare_end_on_select_ok() {
+        assert!(parse_result("select; when 1 then nop; end").is_ok());
+    }
+
+    #[test]
+    fn end_name_on_select_errors() {
+        let err = parse_result("select; when 1 then nop; end x").unwrap_err();
+        assert_eq!(err.error, RexxError::InvalidDataOnEnd);
     }
 }
