@@ -8,6 +8,8 @@
 
 A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274-1996.
 
+**[Documentation](https://navicore.github.io/patch-rexx/)** -- quickstart, language status, BIF reference, and design docs.
+
 ```rexx
 /* Classic REXX */
 say "What is your name?"
@@ -60,7 +62,7 @@ See [ROADMAP.md](ROADMAP.md) for the phase-by-phase development plan and remaini
 
 **Building**
 
-Requires Rust edition 2024 toolchain.
+Requires Rust edition 2024 toolchain. The exact compiler version is pinned in `rust-toolchain.toml`; `rustup` will pick it up automatically when you `cd` into the repo.
 
 ```bash
 cargo build --release
@@ -73,6 +75,23 @@ To build with Language Server support:
 ```bash
 cargo build --release --features lsp
 ```
+
+**Development (`just`)**
+
+The `justfile` is the single source of truth for build, lint, and test. Both local dev and GitHub Actions call the same recipes — no drift.
+
+```bash
+just ci          # what CI runs: fmt-check, lint, test, build
+just fmt         # format the workspace
+just fmt-check   # verify formatting
+just lint        # cargo clippy --locked --workspace --all-targets -- -D warnings
+just test        # cargo test --locked --workspace --all-targets
+just build       # cargo build --locked --release
+just install     # cargo install --path . --locked --force  (installs `rexx` into ~/.cargo/bin)
+just clean       # cargo clean
+```
+
+Run `just ci` before pushing — it runs exactly what CI runs, so a green local run means a green CI run.
 
 **Usage**
 
@@ -121,6 +140,27 @@ rexx examples/parse_demo.rexx
 **INTERPRET is first-class.** The architecture assumes `INTERPRET expr` exists. Since patch-rexx is an interpreter, this is trivial: parse the string, evaluate the AST in the current environment. No special compilation tricks, no restrictions.
 
 **REXX scoping is opaque.** PROCEDURE creates a completely isolated variable scope. EXPOSE selectively copies variables into that scope. There is no scope chain lookup -- if a variable isn't in your scope, it returns its own uppercased name. This is correct REXX semantics and enforced by the environment implementation.
+
+---
+
+**Releasing**
+
+Releases are automated by `.github/workflows/release.yml`. To cut a release:
+
+1. Create a GitHub release with a tag of the form `vX.Y.Z` (e.g. `v0.9.5`).
+2. The workflow then:
+   - bumps `[package].version` in `Cargo.toml` to match the tag (using a section-scoped `awk` so dependency `version = "..."` lines aren't touched),
+   - runs `cargo generate-lockfile`,
+   - commits the bump as `chore: bump version to X.Y.Z` (as `github-actions[bot]`) and pushes to `main`,
+   - verifies `Cargo.toml` matches the tag,
+   - publishes via `cargo publish --no-verify` (CI on Linux PRs and macOS main has already verified the build).
+
+Required repo secrets (Settings → Secrets and variables → Actions):
+
+- `PAT` — personal access token with `contents: write`, used to push the version bump back to `main`.
+- `CRATES_IO_TOKEN` — API token from <https://crates.io/settings/tokens>.
+
+A failed `cargo publish` (e.g. version already on crates.io) is downgraded to a workflow warning, not a hard failure.
 
 ---
 

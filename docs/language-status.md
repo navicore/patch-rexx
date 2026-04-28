@@ -33,6 +33,7 @@ Current implementation status against the ANSI X3.274-1996 REXX standard.
 
 | Feature | Phase |
 |---------|-------|
+| ARG BIF | 5 |
 | CENTER/CENTRE BIF | 5 |
 | BITAND, BITOR, BITXOR BIFs | 5 |
 | ERRORTEXT, SOURCELINE, SYMBOL, VALUE BIFs | 5 |

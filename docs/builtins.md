@@ -12,6 +12,7 @@
 | COPIES | `COPIES(string, count)` | Return count concatenated copies |
 | COUNTSTR | `COUNTSTR(needle, string)` | Count occurrences of needle |
 | DELSTR | `DELSTR(string, start [,length])` | Delete substring |
+| INDEX | `INDEX(haystack, needle [,start])` | Find position of needle (POS with swapped args) |
 | INSERT | `INSERT(new, target [,position] [,length] [,pad])` | Insert string at position |
 | LASTPOS | `LASTPOS(needle, haystack [,start])` | Find last occurrence |
 | LEFT | `LEFT(string, length [,pad])` | Left-justify to length |
@@ -82,7 +83,6 @@
 | Function | Signature | Description |
 |----------|-----------|-------------|
 | ADDRESS | `ADDRESS()` | Return current command environment name |
-| ARG | `ARG([n] [,option])` | Return argument or argument info |
 | CONDITION | `CONDITION([option])` | Return condition trap information |
 | DIGITS | `DIGITS()` | Return current NUMERIC DIGITS setting |
 | FORM | `FORM()` | Return current NUMERIC FORM setting |
@@ -92,4 +92,4 @@
 
 ## Not yet implemented
 
-CENTER/CENTRE, BITAND, BITOR, BITXOR, ERRORTEXT, SOURCELINE, SYMBOL, VALUE (as a BIF).
+ARG, CENTER/CENTRE, BITAND, BITOR, BITXOR, ERRORTEXT, SOURCELINE, SYMBOL, VALUE (as a BIF).

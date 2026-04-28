@@ -1,6 +1,6 @@
 # Architecture
 
-A high-level map of patch-rexx. For deeper per-subsystem notes, see `docs/design/`.
+A high-level map of patch-rexx. For deeper per-subsystem notes, see the other reference docs in `docs/`.
 
 ## Context & Scope
 
