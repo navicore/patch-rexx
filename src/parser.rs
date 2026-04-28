@@ -12,6 +12,85 @@ use crate::ast::{
 use crate::error::{RexxDiagnostic, RexxError, RexxResult, SourceLoc};
 use crate::lexer::{Token, TokenKind};
 
+/// REXX keywords recognised at the start of a clause.
+///
+/// Lookup is case-insensitive and zero-alloc — `eq_ignore_ascii_case`
+/// short-circuits on the first differing byte, so non-keywords pay only
+/// a few first-byte compares before falling through to command-clause
+/// parsing.
+#[derive(Clone, Copy)]
+enum KeywordKind {
+    Say,
+    Nop,
+    If,
+    Do,
+    Select,
+    Leave,
+    Iterate,
+    Exit,
+    Return,
+    Call,
+    Procedure,
+    Parse,
+    Pull,
+    Arg,
+    Drop,
+    Signal,
+    Interpret,
+    Trace,
+    Numeric,
+    Push,
+    Queue,
+    Address,
+    End,
+    Then,
+    Else,
+    When,
+    Otherwise,
+}
+
+impl KeywordKind {
+    fn lookup(name: &str) -> Option<Self> {
+        // Ordering doesn't matter for correctness; common keywords first
+        // shaves a few compares for the typical hit.
+        const TABLE: &[(&str, KeywordKind)] = &[
+            ("SAY", KeywordKind::Say),
+            ("IF", KeywordKind::If),
+            ("DO", KeywordKind::Do),
+            ("CALL", KeywordKind::Call),
+            ("RETURN", KeywordKind::Return),
+            ("EXIT", KeywordKind::Exit),
+            ("LEAVE", KeywordKind::Leave),
+            ("ITERATE", KeywordKind::Iterate),
+            ("SELECT", KeywordKind::Select),
+            ("PROCEDURE", KeywordKind::Procedure),
+            ("PARSE", KeywordKind::Parse),
+            ("PULL", KeywordKind::Pull),
+            ("ARG", KeywordKind::Arg),
+            ("DROP", KeywordKind::Drop),
+            ("SIGNAL", KeywordKind::Signal),
+            ("INTERPRET", KeywordKind::Interpret),
+            ("TRACE", KeywordKind::Trace),
+            ("NUMERIC", KeywordKind::Numeric),
+            ("PUSH", KeywordKind::Push),
+            ("QUEUE", KeywordKind::Queue),
+            ("ADDRESS", KeywordKind::Address),
+            ("NOP", KeywordKind::Nop),
+            ("END", KeywordKind::End),
+            ("THEN", KeywordKind::Then),
+            ("ELSE", KeywordKind::Else),
+            ("WHEN", KeywordKind::When),
+            ("OTHERWISE", KeywordKind::Otherwise),
+        ];
+        for (kw, kind) in TABLE {
+            if name.eq_ignore_ascii_case(kw) {
+                return Some(*kind);
+            }
+        }
+        None
+    }
+}
+
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -163,9 +242,9 @@ impl Parser {
                 return self.parse_assignment(&loc);
             }
 
-            // Keyword dispatch.
-            match name.to_ascii_uppercase().as_str() {
-                "SAY" => {
+            // Keyword dispatch (zero-alloc; see KeywordKind::lookup).
+            match KeywordKind::lookup(name) {
+                Some(KeywordKind::Say) => {
                     self.advance();
                     // SAY with no expression outputs an empty line.
                     let expr = if self.is_terminator() {
@@ -178,49 +257,49 @@ impl Parser {
                         loc,
                     });
                 }
-                "NOP" => {
+                Some(KeywordKind::Nop) => {
                     self.advance();
                     return Ok(Clause {
                         kind: ClauseKind::Nop,
                         loc,
                     });
                 }
-                "IF" => return self.parse_if(),
-                "DO" => return self.parse_do(),
-                "SELECT" => return self.parse_select(),
-                "LEAVE" => return Ok(self.parse_leave()),
-                "ITERATE" => return Ok(self.parse_iterate()),
-                "EXIT" => return self.parse_exit(),
-                "RETURN" => return self.parse_return(),
-                "CALL" => return self.parse_call(),
-                "PROCEDURE" => return Ok(self.parse_procedure()),
-                "PARSE" => return self.parse_parse(),
-                "PULL" => return self.parse_pull(),
-                "ARG" => return self.parse_arg(),
-                "DROP" => return Ok(self.parse_drop()),
-                "SIGNAL" => return self.parse_signal(),
-                "INTERPRET" => return self.parse_interpret(),
-                "TRACE" => return self.parse_trace(),
-                "NUMERIC" => return self.parse_numeric(),
-                "PUSH" => return self.parse_push(),
-                "QUEUE" => return self.parse_queue(),
-                "ADDRESS" => return self.parse_address(),
-                "END" => {
+                Some(KeywordKind::If) => return self.parse_if(),
+                Some(KeywordKind::Do) => return self.parse_do(),
+                Some(KeywordKind::Select) => return self.parse_select(),
+                Some(KeywordKind::Leave) => return Ok(self.parse_leave()),
+                Some(KeywordKind::Iterate) => return Ok(self.parse_iterate()),
+                Some(KeywordKind::Exit) => return self.parse_exit(),
+                Some(KeywordKind::Return) => return self.parse_return(),
+                Some(KeywordKind::Call) => return self.parse_call(),
+                Some(KeywordKind::Procedure) => return Ok(self.parse_procedure()),
+                Some(KeywordKind::Parse) => return self.parse_parse(),
+                Some(KeywordKind::Pull) => return self.parse_pull(),
+                Some(KeywordKind::Arg) => return self.parse_arg(),
+                Some(KeywordKind::Drop) => return Ok(self.parse_drop()),
+                Some(KeywordKind::Signal) => return self.parse_signal(),
+                Some(KeywordKind::Interpret) => return self.parse_interpret(),
+                Some(KeywordKind::Trace) => return self.parse_trace(),
+                Some(KeywordKind::Numeric) => return self.parse_numeric(),
+                Some(KeywordKind::Push) => return self.parse_push(),
+                Some(KeywordKind::Queue) => return self.parse_queue(),
+                Some(KeywordKind::Address) => return self.parse_address(),
+                Some(KeywordKind::End) => {
                     return Err(RexxDiagnostic::new(RexxError::UnexpectedEnd)
                         .at(loc)
                         .with_detail("END without matching DO or SELECT"));
                 }
-                "THEN" | "ELSE" => {
+                Some(KeywordKind::Then | KeywordKind::Else) => {
                     return Err(RexxDiagnostic::new(RexxError::UnexpectedThenElse)
                         .at(loc)
                         .with_detail(format!("unexpected {}", name.to_uppercase())));
                 }
-                "WHEN" | "OTHERWISE" => {
+                Some(KeywordKind::When | KeywordKind::Otherwise) => {
                     return Err(RexxDiagnostic::new(RexxError::UnexpectedWhenOtherwise)
                         .at(loc)
                         .with_detail(format!("unexpected {}", name.to_uppercase())));
                 }
-                _ => {} // fall through to command-clause parsing
+                None => {} // fall through to command-clause parsing
             }
         }
 
@@ -460,9 +539,9 @@ impl Parser {
             if self.is_keyword("END") {
                 self.advance();
                 // Optionally consume a loop name after END (e.g., `END i`).
-                if let TokenKind::Symbol(_) = self.peek_kind()
-                    && !self.is_terminator()
-                {
+                // (Spec-correct match against the DO's control variable is
+                // tracked separately — see docs/design/end-name-validation.md.)
+                if let TokenKind::Symbol(_) = self.peek_kind() {
                     self.advance();
                 }
                 break;
