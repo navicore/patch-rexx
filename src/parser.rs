@@ -14,10 +14,11 @@ use crate::lexer::{Token, TokenKind};
 
 /// REXX keywords recognised at the start of a clause.
 ///
-/// Lookup is case-insensitive and zero-alloc — `eq_ignore_ascii_case`
-/// short-circuits on the first differing byte, so non-keywords pay only
-/// a few first-byte compares before falling through to command-clause
-/// parsing.
+/// `lookup` itself does not allocate — it scans a static table with
+/// `eq_ignore_ascii_case`, which short-circuits on the first differing
+/// byte. (The `parse_clause` call site separately clones the current
+/// token to release a borrow on `self`; that allocation predates this
+/// table and is unrelated to the lookup itself.)
 #[derive(Clone, Copy)]
 enum KeywordKind {
     Say,
