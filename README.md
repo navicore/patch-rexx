@@ -141,19 +141,23 @@ rexx examples/parse_demo.rexx
 
 ## Releasing
 
-Releases are automated by `.github/workflows/release.yml`. To cut a release:
+Releases are automated by `.forgejo/workflows/release.yml` (Forgejo Actions). To cut a release, push a `vX.Y.Z` tag:
 
-1. Create a GitHub release with a tag of the form `vX.Y.Z` (e.g. `v0.9.5`).
-2. The workflow then:
-   - bumps `[package].version` in `Cargo.toml` to match the tag (using a section-scoped `awk` so dependency `version = "..."` lines aren't touched),
-   - runs `cargo generate-lockfile`,
-   - commits the bump as `chore: bump version to X.Y.Z` (as `github-actions[bot]`) and pushes to `main`,
-   - verifies `Cargo.toml` matches the tag,
-   - publishes via `cargo publish --no-verify` (CI on Linux PRs and macOS main has already verified the build).
+```bash
+git tag v0.9.6
+git push origin v0.9.6
+```
 
-Required repo secrets (Settings → Secrets and variables → Actions):
+The workflow then:
+- bumps `[package].version` in `Cargo.toml` to match the tag (section-scoped `awk` so dependency `version = "..."` lines aren't touched),
+- runs `cargo generate-lockfile`,
+- commits the bump as `chore: bump version to X.Y.Z` (as `forgejo-actions[bot]`) and pushes to `main`,
+- verifies `Cargo.toml` matches the tag,
+- publishes via `cargo publish --no-verify` (Linux CI on PRs has already verified the build).
 
-- `PAT` — personal access token with `contents: write`, used to push the version bump back to `main`.
+Required repo secrets (Forgejo: repo Settings → Actions → Secrets and Variables):
+
+- `PAT` — Forgejo personal access token with `write:repository` scope, used to push the version bump back to `main`. Generate at Forgejo profile → Settings → Applications.
 - `CRATES_IO_TOKEN` — API token from <https://crates.io/settings/tokens>.
 
 A failed `cargo publish` (e.g. version already on crates.io) is downgraded to a workflow warning, not a hard failure.

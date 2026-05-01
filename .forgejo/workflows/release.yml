@@ -1,8 +1,9 @@
 name: Release to crates.io
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - 'v*'
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,7 +19,7 @@ jobs:
           token: ${{ secrets.PAT }}
           ref: main
 
-      # Pinned to match `rust-toolchain.toml` and `.github/workflows/ci-*.yml`.
+      # Pinned to match `rust-toolchain.toml` and `.forgejo/workflows/ci-linux.yml`.
       # All three values MUST agree — see `setup-rust-ci` invariant.
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -60,8 +61,8 @@ jobs:
 
             cargo generate-lockfile
 
-            git config --local user.email "github-actions[bot]@users.noreply.github.com"
-            git config --local user.name "github-actions[bot]"
+            git config --local user.email "forgejo-actions[bot]@users.noreply.git.navicore.tech"
+            git config --local user.name "forgejo-actions[bot]"
 
             git add Cargo.toml Cargo.lock
             git commit -m "chore: bump version to ${{ steps.version.outputs.version }}"
