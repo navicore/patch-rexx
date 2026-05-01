@@ -1,6 +1,3 @@
-[![CI - Linux](https://github.com/navicore/patch-rexx/actions/workflows/ci-linux.yml/badge.svg)](https://github.com/navicore/patch-rexx/actions/workflows/ci-linux.yml)
-[![CI - macOS](https://github.com/navicore/patch-rexx/actions/workflows/ci-macos.yml/badge.svg)](https://github.com/navicore/patch-rexx/actions/workflows/ci-macos.yml)
-
 # patch-rexx
 
 A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274-1996.
@@ -75,7 +72,9 @@ cargo build --release --features lsp
 
 ## Development (`just`)
 
-The `justfile` is the single source of truth for build, lint, and test. Both local dev and GitHub Actions call the same recipes — no drift.
+The `justfile` is the single source of truth for build, lint, and test. Both local dev and CI (Forgejo Actions) call the same recipes — no drift.
+
+CI runs on Forgejo (`.forgejo/workflows/ci-linux.yml`) on every PR to `main`. It checks: formatting (`fmt-check`), clippy with warnings as errors (`lint`), tests, and the release build.
 
 ```bash
 just ci          # what CI runs: fmt-check, lint, test, build

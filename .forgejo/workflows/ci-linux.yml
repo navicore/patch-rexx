@@ -1,18 +1,15 @@
-# This workflow ONLY calls `just` commands. The justfile is the source of truth.
-name: CI - macOS
+# This workflow ONLY calls just commands. The justfile is the source of truth.
+name: CI - Linux
 
 on:
-  push:
+  pull_request:
     branches: [ main ]
-
-# CI Strategy:
-# - Linux: Runs on every PR for fast feedback (see ci-linux.yml)
-# - macOS: Runs only on merge to main
+  workflow_dispatch:
 
 jobs:
-  ci-macos:
-    name: CI - macOS ARM64
-    runs-on: macos-latest
+  ci-linux:
+    name: CI - Linux x86_64
+    runs-on: ubuntu-latest
 
     steps:
     - name: Checkout code
@@ -34,13 +31,13 @@ jobs:
       uses: actions/cache@v4
       with:
         path: ~/.cargo/registry
-        key: macos-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        key: linux-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Cache cargo index
       uses: actions/cache@v4
       with:
         path: ~/.cargo/git
-        key: macos-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+        key: linux-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Run CI
       run: just ci
