@@ -1,4 +1,3 @@
-# This workflow ONLY calls just commands. The justfile is the source of truth.
 name: CI - Linux
 
 on:
@@ -6,53 +5,44 @@ on:
     branches: [ main ]
   workflow_dispatch:
 
+# This workflow ONLY calls `just` commands. The justfile is the source
+# of truth for all build/test/lint logic, preventing drift between
+# local development and CI.
+#
+# `runs-on: navicore-rust` targets the custom job image at
+# git.navicore.tech/navicore/navicore-forgejo-runner:latest, which has
+# Rust 1.95.0, clang-19, and just pre-installed. Do NOT add a
+# dtolnay/rust-toolchain step — act mirrors third-party actions from
+# data.forgejo.org, which does not host that action, and the build
+# will fail to clone it.
+
 jobs:
   ci-linux:
     name: CI - Linux x86_64
-    runs-on: ubuntu-latest
+    runs-on: navicore-rust
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    # Install `just` from a pinned GitHub release tarball. We avoid both
-    # `extractions/setup-just` and the `just.systems/install.sh` script
-    # because both query api.github.com to discover the latest version.
-    # On Forgejo Actions, GITHUB_TOKEN is a Forgejo token; sending it to
-    # GitHub yields a 401 / "Bad credentials". Downloading a pinned
-    # release artifact directly bypasses the API entirely and gives us
-    # reproducible CI as a bonus. Bump JUST_VERSION to upgrade.
-    - name: Install just
-      env:
-        JUST_VERSION: 1.42.4
-      run: |
-        set -euo pipefail
-        mkdir -p "$HOME/.local/bin"
-        curl --proto '=https' --tlsv1.2 -sSfL \
-          "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
-          | tar -xz -C "$HOME/.local/bin" just
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Verify toolchain
+        run: |
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          just --version
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@master
-      with:
-        toolchain: 1.95.0
-        components: rustfmt, clippy
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/registry
+          key: linux-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Verify Rust version
-      run: rustc --version && cargo --version && cargo clippy --version
+      - name: Cache cargo index
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/git
+          key: linux-cargo-git-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Cache cargo registry
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/registry
-        key: linux-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Cache cargo index
-      uses: actions/cache@v4
-      with:
-        path: ~/.cargo/git
-        key: linux-cargo-git-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Run CI
-      run: just ci
+      - name: Run CI
+        run: just ci
