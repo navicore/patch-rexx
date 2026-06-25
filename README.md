@@ -2,9 +2,9 @@
 
 A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274-1996.
 
-**[Home Code Repository](https://git.navicore.tech/navicore/patch-rexx)** is at
-git.navicore.tech
-PRs and issues welcome at [codeberg mirror](https://codeberg.org/navicore/patch-rexx) codeberg.org
+**Home Code Repository** is at [git.navicore.tech](https://git.navicore.tech/navicore/patch-rexx)
+
+**PRs and issues** welcome at [codeberg.org mirror](https://codeberg.org/navicore/patch-rexx)
 
 **[Documentation](https://navicore.github.io/patch-rexx/)** -- quickstart, language status, BIF reference, and design docs.
 
