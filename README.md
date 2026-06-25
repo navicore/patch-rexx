@@ -2,6 +2,10 @@
 
 A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274-1996.
 
+**[Home Code Repository](https://git.navicore.tech/navicore/patch-rexx)** is at
+git.navicore.tech
+PRs and issues welcome at [codeberg mirror](https://codeberg.org/navicore/patch-rexx) codeberg.org
+
 **[Documentation](https://navicore.github.io/patch-rexx/)** -- quickstart, language status, BIF reference, and design docs.
 
 ```rexx
@@ -166,8 +170,8 @@ A failed `cargo publish` (e.g. version already on crates.io) is downgraded to a 
 
 ## Related Projects
 
-- [patch-seq](https://github.com/navicore/patch-seq) -- Seq, a concatenative language that compiles to native code via LLVM
-- [seq-lisp](https://github.com/navicore/seq-lisp) -- A Lisp interpreter written in Seq
+- [patch-seq](https://git.navicore.tech/navicore/patch-seq) -- Seq, a concatenative language that compiles to native code via LLVM
+- [seq-lisp](https://git.navicore.tech/navicore/seq-lisp) -- A Lisp interpreter written in Seq
 
 ---
 
