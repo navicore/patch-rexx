@@ -6,7 +6,7 @@ A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274
 
 **PRs and issues** welcome at [codeberg.org mirror](https://codeberg.org/navicore/patch-rexx)
 
-**[Documentation](https://navicore.github.io/patch-rexx/)** -- quickstart, language status, BIF reference, and design docs.
+**[Documentation](https://docs.navicore.tech/patch-rexx/)**
 
 ```rexx
 /* Classic REXX */
