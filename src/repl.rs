@@ -1,3 +1,9 @@
+//! Interactive REPL — line-editor-backed loop with history and key dispatch.
+//!
+//! Entry point [`run`] drives a vim-line editor over crossterm input: Enter
+//! submits the current line to the interpreter, j/k in normal mode walk the
+//! history file, and Ctrl-D / Ctrl-C / `EXIT` quit.
+
 use crossterm::event::{self, Event, KeyCode as CtKeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use patch_rexx::{env, error};
@@ -199,6 +205,10 @@ fn submit(
 
 // ── Main REPL loop ───────────────────────────────────────────────────
 
+/// Run the interactive REPL loop until the user quits (EXIT, Ctrl-D, or Ctrl-C).
+///
+/// `run_line` is the interpreter callback invoked for each submitted line.
+/// Takes over the terminal (raw mode + panic hook) for the duration of the loop.
 pub fn run(
     environment: &mut env::Environment,
     run_line: fn(&str, &mut env::Environment, &[String]) -> error::RexxResult<i32>,

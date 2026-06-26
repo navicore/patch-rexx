@@ -541,29 +541,38 @@ impl Lexer {
 
 /// Convert a hex string like "48 65 6C" to characters.
 fn hex_string_to_chars(s: &str) -> Result<String, String> {
-    let hex: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if !hex.len().is_multiple_of(2) {
-        return Err("odd number of hex digits".into());
-    }
-    let mut result = String::new();
-    for i in (0..hex.len()).step_by(2) {
-        let byte = u8::from_str_radix(&hex[i..i + 2], 16)
-            .map_err(|_| format!("invalid hex digit at position {i}"))?;
-        result.push(byte as char);
-    }
-    Ok(result)
+    decode_radix_string(s, 2, 16, "odd number of hex digits", "invalid hex digit")
 }
 
 /// Convert a binary string like "0100 1000" to characters.
 fn bin_string_to_chars(s: &str) -> Result<String, String> {
-    let bits: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if !bits.len().is_multiple_of(8) {
-        return Err("binary string length must be a multiple of 8".into());
+    decode_radix_string(
+        s,
+        8,
+        2,
+        "binary string length must be a multiple of 8",
+        "invalid binary digit",
+    )
+}
+
+/// Shared body of [`hex_string_to_chars`] and [`bin_string_to_chars`]: strip
+/// whitespace, require the digit count to be a multiple of `group`, then decode
+/// each group as a byte in `radix` and push it as a `char`.
+fn decode_radix_string(
+    s: &str,
+    group: usize,
+    radix: u32,
+    length_err: &str,
+    digit_err: &str,
+) -> Result<String, String> {
+    let digits: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if !digits.len().is_multiple_of(group) {
+        return Err(length_err.into());
     }
     let mut result = String::new();
-    for i in (0..bits.len()).step_by(8) {
-        let byte = u8::from_str_radix(&bits[i..i + 8], 2)
-            .map_err(|_| format!("invalid binary digit at position {i}"))?;
+    for i in (0..digits.len()).step_by(group) {
+        let byte = u8::from_str_radix(&digits[i..i + group], radix)
+            .map_err(|_| format!("{digit_err} at position {i}"))?;
         result.push(byte as char);
     }
     Ok(result)
