@@ -275,7 +275,11 @@ impl Lexer {
     #[allow(clippy::too_many_lines)]
     fn next_token(&mut self) -> RexxResult<Token> {
         let loc = self.loc();
-        let ch = self.peek().unwrap();
+        // Only called after `at_end()` returned false in `tokenize`, so there
+        // is always at least one char to read.
+        let Some(ch) = self.peek() else {
+            unreachable!("next_token called at EOF");
+        };
 
         match ch {
             // String literals: 'single' or "double" quoted
@@ -457,7 +461,9 @@ impl Lexer {
                     .at(loc)
                     .with_detail("unterminated string literal"));
             }
-            let ch = self.advance().unwrap();
+            let Some(ch) = self.advance() else {
+                unreachable!("checked not at_end above");
+            };
             if ch == quote {
                 // Doubled quote is an escape: '' inside '...' means literal '
                 if self.peek() == Some(quote) {
@@ -513,10 +519,12 @@ impl Lexer {
         }
 
         // Exponent part
-        if self.peek().is_some_and(|c| c == 'e' || c == 'E') {
-            num.push(self.advance().unwrap());
-            if self.peek().is_some_and(|c| c == '+' || c == '-') {
-                num.push(self.advance().unwrap());
+        if let Some(c) = self.peek().filter(|c| *c == 'e' || *c == 'E') {
+            self.advance();
+            num.push(c);
+            if let Some(sign) = self.peek().filter(|c| *c == '+' || *c == '-') {
+                self.advance();
+                num.push(sign);
             }
             while let Some(ch) = self.peek() {
                 if ch.is_ascii_digit() {
