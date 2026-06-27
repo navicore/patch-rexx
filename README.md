@@ -178,4 +178,3 @@ A failed `cargo publish` (e.g. version already on crates.io) is downgraded to a 
 ## License
 
 MIT
-
