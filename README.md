@@ -1,5 +1,8 @@
 # patch-rexx
 
+[![crates.io](https://img.shields.io/crates/v/patch-rexx)](https://crates.io/crates/patch-rexx)
+[![docs.rs](https://img.shields.io/docsrs/patch-rexx)](https://docs.rs/patch-rexx)
+
 A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274-1996.
 
 **Home Code Repository** is at [git.navicore.tech](https://git.navicore.tech/navicore/patch-rexx)
