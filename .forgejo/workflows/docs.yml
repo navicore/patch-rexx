@@ -1,0 +1,121 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Build the mdBook docs and publish them to docs.navicore.tech/patch-rexx via
+# navidocs. Auth is a short-lived anz client_credentials token (no deploy key).
+#
+# runs-on: navicore-rust — the custom runner image (Rust 1.96.0 + just +
+# mdbook pre-installed). See ../navicore-forgejo-runner for the image
+# definition.
+#
+# Required repo secrets (the anz service account registered for this repo):
+#   DOCS_CLIENT_ID     — the client's NAME (e.g. "patch-rexx-ci"), used as the
+#                        OAuth client_id. NOT anz's internal UUID.
+#   DOCS_CLIENT_SECRET — that client's secret.
+# The slug below must match what navidocs' policy allows that client to publish.
+
+jobs:
+  publish-docs:
+    name: Build and publish docs
+    runs-on: navicore-rust
+    steps:
+      - uses: actions/checkout@v6
+
+      # mdbook is baked into the navicore-rust runner image
+      # (see ../navicore-forgejo-runner), so there is no per-run install.
+      - name: Build docs
+        run: just docs # gen-docs + mdbook build -> ./book
+
+      - name: Publish to docs.navicore.tech/patch-rexx
+        env:
+          ANZ_TOKEN_URL: https://auth.navicore.tech/realms/homelab/token
+          DOCS_CLIENT_ID: ${{ secrets.DOCS_CLIENT_ID }}
+          DOCS_CLIENT_SECRET: ${{ secrets.DOCS_CLIENT_SECRET }}
+          DOCS_BASE_URL: https://docs.navicore.tech
+          SLUG: patch-rexx
+        run: |
+          set -euo pipefail
+
+          # NOTE on logging: we deliberately avoid `curl -sf`. `-s` mutes the
+          # body and `-f` exits non-zero with NO output, so a failed publish
+          # showed up as a bare "exit 1" with nothing to diagnose. Instead we
+          # capture HTTP status + body for each call and print them. The access
+          # token and client secret are never echoed; anz/navidocs error bodies
+          # are OAuth/JSON error objects (no secrets), so they are safe to show.
+
+          echo "::group::Preflight"
+          : "${DOCS_CLIENT_ID:?DOCS_CLIENT_ID secret is not set on this repo}"
+          : "${DOCS_CLIENT_SECRET:?DOCS_CLIENT_SECRET secret is not set on this repo}"
+          if [ ! -d book ] || [ -z "$(ls -A book 2>/dev/null)" ]; then
+            echo "::error::book/ is missing or empty — the docs build produced no output"
+            exit 1
+          fi
+          echo "slug:        $SLUG"
+          echo "token url:   $ANZ_TOKEN_URL"
+          echo "publish url: $DOCS_BASE_URL/api/sites/$SLUG"
+          echo "book/:       $(du -sh book | cut -f1), $(find book -type f | wc -l) files"
+          echo "::endgroup::"
+
+          echo "::group::Request anz access token (client_credentials)"
+          token_body=$(mktemp)
+          # --data-urlencode safely encodes a secret with special characters.
+          # Disable errexit around curl so a non-zero exit (network/TLS) is
+          # reported by us, not swallowed by `set -e`.
+          set +e
+          token_code=$(curl -sS -o "$token_body" -w '%{http_code}' \
+            -X POST "$ANZ_TOKEN_URL" \
+            --data-urlencode "grant_type=client_credentials" \
+            --data-urlencode "client_id=$DOCS_CLIENT_ID" \
+            --data-urlencode "client_secret=$DOCS_CLIENT_SECRET" \
+            --data-urlencode "scope=docs:publish")
+          token_rc=$?
+          set -e
+          if [ "$token_rc" -ne 0 ]; then
+            echo "::error::could not reach anz at $ANZ_TOKEN_URL (curl exit $token_rc)"
+            exit 1
+          fi
+          echo "anz HTTP status: $token_code"
+          if [ "$token_code" != "200" ]; then
+            echo "anz error body: $(cat "$token_body")"   # OAuth error object, no secrets
+            echo "::error::anz rejected the client_credentials request (HTTP $token_code)"
+            exit 1
+          fi
+          # Confirm the grant without leaking the token — show scope/expiry only.
+          echo "granted scope: $(grep -o '"scope":"[^"]*"' "$token_body" | cut -d'"' -f4)"
+          echo "expires_in:    $(grep -o '"expires_in":[0-9]*' "$token_body" | cut -d: -f2)"
+          TOKEN=$(grep -o '"access_token":"[^"]*"' "$token_body" | cut -d'"' -f4)
+          rm -f "$token_body"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::HTTP 200 from anz but no access_token in the response"
+            exit 1
+          fi
+          echo "access token acquired (not logged)"
+          echo "::endgroup::"
+
+          echo "::group::Upload site bundle to navidocs"
+          upload_body=$(mktemp)
+          set +e
+          upload_code=$(tar czf - -C book . \
+            | curl -sS -o "$upload_body" -w '%{http_code}' \
+                -X POST "$DOCS_BASE_URL/api/sites/$SLUG" \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Content-Type: application/gzip" \
+                --data-binary @-)
+          upload_rc=$?
+          set -e
+          if [ "$upload_rc" -ne 0 ]; then
+            echo "::error::could not reach navidocs at $DOCS_BASE_URL (curl exit $upload_rc)"
+            exit 1
+          fi
+          echo "navidocs HTTP status:   $upload_code"
+          echo "navidocs response body: $(cat "$upload_body")"   # {"status":..} or {"error":..}
+          rm -f "$upload_body"
+          case "$upload_code" in
+            2*) echo "✅ Published to $DOCS_BASE_URL/$SLUG/" ;;
+            *)  echo "::error::navidocs rejected the upload (HTTP $upload_code)"; exit 1 ;;
+          esac
+          echo "::endgroup::"

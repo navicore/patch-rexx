@@ -54,3 +54,16 @@ stats:
     @echo "=== Module tree ==="
     @cargo modules structure --lib 2>/dev/null \
       || echo "(install cargo-modules for the module tree: cargo install cargo-modules)"
+
+# Regenerate docs/README.md from the repo-root README.md (header-flattened for
+# the mdBook sidebar). Run before any mdbook build.
+gen-docs:
+    ./scripts/generate-examples-docs.sh
+
+# Build the mdBook site into ./book/ (what the docs.yml workflow runs).
+docs: gen-docs
+    mdbook build
+
+# Serve the docs locally with hot reload.
+docs-serve: gen-docs
+    mdbook serve --open
