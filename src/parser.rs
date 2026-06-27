@@ -652,9 +652,6 @@ impl Parser {
         })
     }
 
-    /// Collect clauses until end-of-input or any of `stop_keywords` is peeked
-    /// (without consuming it — the caller handles the stop keyword). Shared by
-    /// SELECT's WHEN and OTHERWISE bodies, which differ only in what terminates them.
     /// Parse a `+n` / `-n` relative-position template element. The leading sign
     /// token is already consumed; `sign` is +1/-1 and `glyph` carries the
     /// original char for error messages.
@@ -674,6 +671,9 @@ impl Parser {
         }
     }
 
+    /// Collect clauses until end-of-input or any of `stop_keywords` is peeked
+    /// (without consuming it — the caller handles the stop keyword). Shared by
+    /// SELECT's WHEN and OTHERWISE bodies, which differ only in what terminates them.
     fn parse_clause_list(&mut self, stop_keywords: &[&str]) -> RexxResult<Vec<Clause>> {
         let mut body = Vec::new();
         loop {

@@ -275,10 +275,10 @@ pub(crate) fn run(
             continue;
         }
 
-        // j/k in normal mode → history navigation. Consume the key so it
-        // isn't also dispatched to vim-line (which treats j/k as motion and
-        // would move the cursor). Falls through to the single render at the
-        // bottom of the loop.
+        // j/k in normal mode → history navigation. Mark the key consumed so the
+        // vim-line dispatch below is skipped (j/k would otherwise move the
+        // cursor); the single mode-aware render at the bottom of the loop
+        // redraws the updated input.
         let mut consumed = false;
         if editor.status() == "NORMAL" {
             match key_event.code {
@@ -295,37 +295,36 @@ pub(crate) fn run(
                 _ => {}
             }
         }
-        if consumed {
-            continue;
-        }
 
         // ── Dispatch to vim-line ────────────────────────────────────
-        let vl_key = convert_key(key_event);
-        let result = editor.handle_key(vl_key, &input);
+        if !consumed {
+            let vl_key = convert_key(key_event);
+            let result = editor.handle_key(vl_key, &input);
 
-        // Apply edits in reverse to preserve byte offsets
-        for edit in result.edits.into_iter().rev() {
-            edit.apply(&mut input);
-        }
+            // Apply edits in reverse to preserve byte offsets
+            for edit in result.edits.into_iter().rev() {
+                edit.apply(&mut input);
+            }
 
-        // Handle actions returned by vim-line
-        if let Some(action) = result.action {
-            match action {
-                Action::Submit => {
-                    if submit(&mut input, &mut editor, &mut history, environment, run_line) {
+            // Handle actions returned by vim-line
+            if let Some(action) = result.action {
+                match action {
+                    Action::Submit => {
+                        if submit(&mut input, &mut editor, &mut history, environment, run_line) {
+                            break;
+                        }
+                    }
+                    Action::HistoryPrev => {
+                        let entry = history.prev(&input);
+                        apply_history_entry(&mut input, &mut editor, entry);
+                    }
+                    Action::HistoryNext => {
+                        let entry = history.next();
+                        apply_history_entry(&mut input, &mut editor, entry);
+                    }
+                    Action::Cancel => {
                         break;
                     }
-                }
-                Action::HistoryPrev => {
-                    let entry = history.prev(&input);
-                    apply_history_entry(&mut input, &mut editor, entry);
-                }
-                Action::HistoryNext => {
-                    let entry = history.next();
-                    apply_history_entry(&mut input, &mut editor, entry);
-                }
-                Action::Cancel => {
-                    break;
                 }
             }
         }
