@@ -1,3 +1,9 @@
+//! `rexx` binary — CLI entry point.
+//!
+//! Parses args via clap and dispatches to one of four modes: `-e` expression,
+//! source file, interactive REPL (`src/repl.rs`), or piped stdin. `run_line`
+//! is the shared lex→parse→eval callback shared with the REPL.
+
 mod repl;
 
 use clap::Parser;
@@ -31,34 +37,14 @@ fn main() {
 
     if let Some(expr) = &cli.eval {
         let mut environment = env::Environment::new();
-        match run_line(expr, &mut environment, &[]) {
-            Ok(code) => {
-                if code != 0 {
-                    std::process::exit(code);
-                }
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
+        run_and_exit(run_line(expr, &mut environment, &[]));
     } else if let Some(path) = &cli.source {
         match std::fs::read_to_string(path) {
             Ok(source) => {
                 let mut environment = env::Environment::new();
                 let canonical = path.canonicalize().unwrap_or_else(|_| path.clone());
                 environment.set_source_path(canonical);
-                match run_line(&source, &mut environment, &cli.args) {
-                    Ok(code) => {
-                        if code != 0 {
-                            std::process::exit(code);
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("{e}");
-                        std::process::exit(1);
-                    }
-                }
+                run_and_exit(run_line(&source, &mut environment, &cli.args));
             }
             Err(e) => {
                 eprintln!("rexx: cannot read {}: {}", path.display(), e);
@@ -75,16 +61,18 @@ fn main() {
             std::process::exit(1);
         }
         let mut environment = env::Environment::new();
-        match run_line(&source, &mut environment, &cli.args) {
-            Ok(code) => {
-                if code != 0 {
-                    std::process::exit(code);
-                }
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
+        run_and_exit(run_line(&source, &mut environment, &cli.args));
+    }
+}
+
+/// Translate a run result into a process exit: the program's exit code on
+/// `Ok`, or a printed diagnostic + exit 1 on `Err`. Always exits — never returns.
+fn run_and_exit(result: error::RexxResult<i32>) -> ! {
+    match result {
+        Ok(code) => std::process::exit(code),
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
         }
     }
 }

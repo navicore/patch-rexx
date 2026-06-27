@@ -1,3 +1,9 @@
+//! Interactive REPL — line-editor-backed loop with history and key dispatch.
+//!
+//! Entry point [`run`] drives a vim-line editor over crossterm input: Enter
+//! submits the current line to the interpreter, j/k in normal mode walk the
+//! history file, and Ctrl-D / Ctrl-C / `EXIT` quit.
+
 use crossterm::event::{self, Event, KeyCode as CtKeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use patch_rexx::{env, error};
@@ -152,6 +158,15 @@ fn render_line(prompt: &str, input: &str, cursor: usize) {
 
 // ── Submit helper ────────────────────────────────────────────────────
 
+/// Replace `input` with `entry` (when present) and park the editor cursor at
+/// the end. No-op when the history lookup returned `None`.
+fn apply_history_entry(input: &mut String, editor: &mut VimLineEditor, entry: Option<&str>) {
+    if let Some(e) = entry {
+        *input = e.to_string();
+        editor.set_cursor(input.len(), input);
+    }
+}
+
 /// Execute the current input: add to history, run, clear buffer, re-enter
 /// insert mode. Returns `true` if the REPL should exit (EXIT command).
 fn submit(
@@ -199,7 +214,11 @@ fn submit(
 
 // ── Main REPL loop ───────────────────────────────────────────────────
 
-pub fn run(
+/// Run the interactive REPL loop until the user quits (EXIT, Ctrl-D, or Ctrl-C).
+///
+/// `run_line` is the interpreter callback invoked for each submitted line.
+/// Takes over the terminal (raw mode + panic hook) for the duration of the loop.
+pub(crate) fn run(
     environment: &mut env::Environment,
     run_line: fn(&str, &mut env::Environment, &[String]) -> error::RexxResult<i32>,
 ) {
@@ -256,61 +275,56 @@ pub fn run(
             continue;
         }
 
-        // j/k in normal mode → history navigation
-        // (vim-line treats them as line-up/down, which are no-ops on single-line input)
+        // j/k in normal mode → history navigation. Mark the key consumed so the
+        // vim-line dispatch below is skipped (j/k would otherwise move the
+        // cursor); the single mode-aware render at the bottom of the loop
+        // redraws the updated input.
+        let mut consumed = false;
         if editor.status() == "NORMAL" {
             match key_event.code {
                 CtKeyCode::Char('k') => {
-                    if let Some(entry) = history.prev(&input) {
-                        input = entry.to_string();
-                        editor.set_cursor(input.len(), &input);
-                    }
-                    render_line("rexx: ", &input, editor.cursor());
-                    continue;
+                    let entry = history.prev(&input);
+                    apply_history_entry(&mut input, &mut editor, entry);
+                    consumed = true;
                 }
                 CtKeyCode::Char('j') => {
-                    if let Some(entry) = history.next() {
-                        input = entry.to_string();
-                        editor.set_cursor(input.len(), &input);
-                    }
-                    render_line("rexx: ", &input, editor.cursor());
-                    continue;
+                    let entry = history.next();
+                    apply_history_entry(&mut input, &mut editor, entry);
+                    consumed = true;
                 }
                 _ => {}
             }
         }
 
         // ── Dispatch to vim-line ────────────────────────────────────
-        let vl_key = convert_key(key_event);
-        let result = editor.handle_key(vl_key, &input);
+        if !consumed {
+            let vl_key = convert_key(key_event);
+            let result = editor.handle_key(vl_key, &input);
 
-        // Apply edits in reverse to preserve byte offsets
-        for edit in result.edits.into_iter().rev() {
-            edit.apply(&mut input);
-        }
+            // Apply edits in reverse to preserve byte offsets
+            for edit in result.edits.into_iter().rev() {
+                edit.apply(&mut input);
+            }
 
-        // Handle actions returned by vim-line
-        if let Some(action) = result.action {
-            match action {
-                Action::Submit => {
-                    if submit(&mut input, &mut editor, &mut history, environment, run_line) {
+            // Handle actions returned by vim-line
+            if let Some(action) = result.action {
+                match action {
+                    Action::Submit => {
+                        if submit(&mut input, &mut editor, &mut history, environment, run_line) {
+                            break;
+                        }
+                    }
+                    Action::HistoryPrev => {
+                        let entry = history.prev(&input);
+                        apply_history_entry(&mut input, &mut editor, entry);
+                    }
+                    Action::HistoryNext => {
+                        let entry = history.next();
+                        apply_history_entry(&mut input, &mut editor, entry);
+                    }
+                    Action::Cancel => {
                         break;
                     }
-                }
-                Action::HistoryPrev => {
-                    if let Some(entry) = history.prev(&input) {
-                        input = entry.to_string();
-                        editor.set_cursor(input.len(), &input);
-                    }
-                }
-                Action::HistoryNext => {
-                    if let Some(entry) = history.next() {
-                        input = entry.to_string();
-                        editor.set_cursor(input.len(), &input);
-                    }
-                }
-                Action::Cancel => {
-                    break;
                 }
             }
         }

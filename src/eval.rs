@@ -295,16 +295,26 @@ impl<'a> Evaluator<'a> {
         }
     }
 
+    /// Run one clause through the outer wrapper, then apply the pending-exit /
+    /// pending-signal / non-Normal short-circuit shared by every clause loop.
+    /// Returns `Some(signal)` when the caller should stop iterating and propagate.
+    fn exec_step(&mut self, clause: &Clause) -> RexxResult<Option<ExecSignal>> {
+        let signal = self.exec_clause_outer(clause)?;
+        if let Some(sig) = self.pending_exit.take_signal() {
+            return Ok(Some(sig));
+        }
+        if let Some(label) = self.pending_signal.take() {
+            return Ok(Some(ExecSignal::Signal(label)));
+        }
+        if !matches!(signal, ExecSignal::Normal) {
+            return Ok(Some(signal));
+        }
+        Ok(None)
+    }
+
     fn exec_from(&mut self, start: usize) -> RexxResult<ExecSignal> {
         for clause in &self.program.clauses[start..] {
-            let signal = self.exec_clause_outer(clause)?;
-            if let Some(signal) = self.pending_exit.take_signal() {
-                return Ok(signal);
-            }
-            if let Some(label) = self.pending_signal.take() {
-                return Ok(ExecSignal::Signal(label));
-            }
-            if !matches!(signal, ExecSignal::Normal) {
+            if let Some(signal) = self.exec_step(clause)? {
                 return Ok(signal);
             }
         }
@@ -313,14 +323,7 @@ impl<'a> Evaluator<'a> {
 
     fn exec_body(&mut self, body: &[Clause]) -> RexxResult<ExecSignal> {
         for clause in body {
-            let signal = self.exec_clause_outer(clause)?;
-            if let Some(signal) = self.pending_exit.take_signal() {
-                return Ok(signal);
-            }
-            if let Some(label) = self.pending_signal.take() {
-                return Ok(ExecSignal::Signal(label));
-            }
-            if !matches!(signal, ExecSignal::Normal) {
+            if let Some(signal) = self.exec_step(clause)? {
                 return Ok(signal);
             }
         }
@@ -742,14 +745,7 @@ impl<'a> Evaluator<'a> {
     /// Execute interpreted clauses from a given index (mirrors `exec_from` for interpreted code).
     fn exec_interpret_from(&mut self, clauses: &[Clause], start: usize) -> RexxResult<ExecSignal> {
         for clause in &clauses[start..] {
-            let signal = self.exec_clause_outer(clause)?;
-            if let Some(signal) = self.pending_exit.take_signal() {
-                return Ok(signal);
-            }
-            if let Some(label) = self.pending_signal.take() {
-                return Ok(ExecSignal::Signal(label));
-            }
-            if !matches!(signal, ExecSignal::Normal) {
+            if let Some(signal) = self.exec_step(clause)? {
                 return Ok(signal);
             }
         }
@@ -858,18 +854,7 @@ impl<'a> Evaluator<'a> {
         // Resolution order: 1) internal labels, 2) built-in functions, 3) external, 4) error
         if self.labels.contains_key(name) {
             let signal = self.call_routine(name, args)?;
-            match signal {
-                ExecSignal::Return(Some(val)) => {
-                    self.env.set("RESULT", val);
-                    Ok(ExecSignal::Normal)
-                }
-                ExecSignal::Return(None) | ExecSignal::Normal => {
-                    self.env.drop("RESULT");
-                    Ok(ExecSignal::Normal)
-                }
-                ExecSignal::Exit(_) | ExecSignal::Signal(_) => Ok(signal),
-                ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(ExecSignal::Normal),
-            }
+            Ok(self.finalize_call_signal(signal))
         } else if let Some(result) =
             crate::builtins::call_builtin(name, &args, &self.settings, self.env, self.queue.len())
         {
@@ -879,21 +864,55 @@ impl<'a> Evaluator<'a> {
         } else {
             // Step 3: external function search
             match self.try_call_external(name, args)? {
-                Some(signal) => match signal {
-                    ExecSignal::Return(Some(val)) => {
-                        self.env.set("RESULT", val);
-                        Ok(ExecSignal::Normal)
-                    }
-                    ExecSignal::Return(None) | ExecSignal::Normal => {
-                        self.env.drop("RESULT");
-                        Ok(ExecSignal::Normal)
-                    }
-                    ExecSignal::Exit(_) | ExecSignal::Signal(_) => Ok(signal),
-                    ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(ExecSignal::Normal),
-                },
+                Some(signal) => Ok(self.finalize_call_signal(signal)),
                 None => Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
                     .with_detail(format!("routine '{name}' not found"))),
             }
+        }
+    }
+
+    /// Map a routine's exit signal to a CALL instruction's outcome.
+    /// `RETURN value` → set RESULT; bare `RETURN`/`Normal` → drop RESULT;
+    /// `EXIT`/`SIGNAL` propagate; `LEAVE`/`ITERATE` normalize to Normal.
+    fn finalize_call_signal(&mut self, signal: ExecSignal) -> ExecSignal {
+        match signal {
+            ExecSignal::Return(Some(val)) => {
+                self.env.set("RESULT", val);
+                ExecSignal::Normal
+            }
+            ExecSignal::Return(None) | ExecSignal::Normal => {
+                self.env.drop("RESULT");
+                ExecSignal::Normal
+            }
+            ExecSignal::Exit(_) | ExecSignal::Signal(_) => signal,
+            ExecSignal::Leave(_) | ExecSignal::Iterate(_) => ExecSignal::Normal,
+        }
+    }
+
+    /// Map a routine's exit signal to a function-call's value (expression
+    /// context). `RETURN value` → the value (traced); bare `RETURN`/`Normal` →
+    /// `NoReturnData` error; `EXIT`/`SIGNAL` become pending and yield "";
+    /// `LEAVE`/`ITERATE` yield "".
+    fn finalize_fn_signal(&mut self, name: &str, signal: ExecSignal) -> RexxResult<RexxValue> {
+        match signal {
+            ExecSignal::Return(Some(val)) => {
+                self.trace_intermediates("F", val.as_str());
+                Ok(val)
+            }
+            ExecSignal::Return(None) | ExecSignal::Normal => {
+                Err(RexxDiagnostic::new(RexxError::NoReturnData)
+                    .with_detail(format!("function '{name}' did not return data")))
+            }
+            ExecSignal::Exit(val) => {
+                self.pending_exit = PendingExit::WithValue(val);
+                Ok(RexxValue::new(""))
+            }
+            // Propagate as pending — eval_expr cannot return an ExecSignal.
+            ExecSignal::Signal(label) => {
+                self.pending_signal = Some(label);
+                Ok(RexxValue::new(""))
+            }
+            ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
         }
     }
 
@@ -1782,28 +1801,7 @@ impl<'a> Evaluator<'a> {
                 // Resolution order: 1) internal labels, 2) built-in functions, 3) external, 4) error
                 if self.labels.contains_key(name.as_str()) {
                     let signal = self.call_routine(name, evaluated_args)?;
-                    match signal {
-                        ExecSignal::Return(Some(val)) => {
-                            self.trace_intermediates("F", val.as_str());
-                            Ok(val)
-                        }
-                        ExecSignal::Return(None) | ExecSignal::Normal => {
-                            Err(RexxDiagnostic::new(RexxError::NoReturnData)
-                                .with_detail(format!("function '{name}' did not return data")))
-                        }
-                        ExecSignal::Exit(val) => {
-                            self.pending_exit = PendingExit::WithValue(val);
-                            Ok(RexxValue::new(""))
-                        }
-                        ExecSignal::Signal(_) => {
-                            // Propagate signal as pending — we can't return ExecSignal from eval_expr
-                            if let ExecSignal::Signal(label) = signal {
-                                self.pending_signal = Some(label);
-                            }
-                            Ok(RexxValue::new(""))
-                        }
-                        ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
-                    }
+                    self.finalize_fn_signal(name, signal)
                 } else if let Some(result) = crate::builtins::call_builtin(
                     name,
                     &evaluated_args,
@@ -1817,27 +1815,7 @@ impl<'a> Evaluator<'a> {
                 } else {
                     // Step 3: external function search
                     match self.try_call_external(name, evaluated_args)? {
-                        Some(signal) => match signal {
-                            ExecSignal::Return(Some(val)) => {
-                                self.trace_intermediates("F", val.as_str());
-                                Ok(val)
-                            }
-                            ExecSignal::Return(None) | ExecSignal::Normal => {
-                                Err(RexxDiagnostic::new(RexxError::NoReturnData)
-                                    .with_detail(format!("function '{name}' did not return data")))
-                            }
-                            ExecSignal::Exit(val) => {
-                                self.pending_exit = PendingExit::WithValue(val);
-                                Ok(RexxValue::new(""))
-                            }
-                            ExecSignal::Signal(_) => {
-                                if let ExecSignal::Signal(label) = signal {
-                                    self.pending_signal = Some(label);
-                                }
-                                Ok(RexxValue::new(""))
-                            }
-                            ExecSignal::Leave(_) | ExecSignal::Iterate(_) => Ok(RexxValue::new("")),
-                        },
+                        Some(signal) => self.finalize_fn_signal(name, signal),
                         None => Err(RexxDiagnostic::new(RexxError::RoutineNotFound)
                             .with_detail(format!("routine '{name}' not found"))),
                     }

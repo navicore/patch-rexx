@@ -272,21 +272,21 @@ impl Lexer {
         Ok(())
     }
 
-    #[allow(clippy::too_many_lines)]
     fn next_token(&mut self) -> RexxResult<Token> {
         let loc = self.loc();
-        let ch = self.peek().unwrap();
+        // Only called after `at_end()` returned false in `tokenize`, so there
+        // is always at least one char to read.
+        let Some(ch) = self.peek() else {
+            unreachable!("next_token called at EOF");
+        };
 
         match ch {
             // String literals: 'single' or "double" quoted
             '\'' | '"' => self.lex_string(ch),
-
             // Numbers
             '0'..='9' => Ok(self.lex_number()),
-
             // Symbols (identifiers, keywords — REXX has no reserved words)
             'a'..='z' | 'A'..='Z' | '_' | '!' | '?' | '@' | '#' | '$' => Ok(self.lex_symbol()),
-
             // Dot can start a symbol or be standalone
             '.' => {
                 if self
@@ -299,54 +299,33 @@ impl Lexer {
                     Ok(Token::new(TokenKind::Dot, loc, false))
                 }
             }
-
             // Operators and delimiters
-            '+' => {
+            _ => self.lex_operator(ch, loc),
+        }
+    }
+
+    /// Lex an operator or delimiter starting at `ch`. Single-character tokens
+    /// with no lookahead are dispatched via [`Self::single_char_token`]; the
+    /// remaining multi-character operators do their own lookahead here.
+    fn lex_operator(&mut self, ch: char, loc: SourceLoc) -> RexxResult<Token> {
+        if let Some(kind) = Self::single_char_token(ch) {
+            self.advance();
+            return Ok(Token::new(kind, loc, false));
+        }
+
+        let kind = match ch {
+            '*' => self.binary_op('*', TokenKind::Power, TokenKind::Star),
+            '/' => self.binary_op('/', TokenKind::Remainder, TokenKind::Slash),
+            '|' => self.binary_op('|', TokenKind::Concat, TokenKind::Or),
+            '&' => self.binary_op('&', TokenKind::Xor, TokenKind::And),
+            '=' => {
                 self.advance();
-                Ok(Token::new(TokenKind::Plus, loc, false))
-            }
-            '-' => {
-                self.advance();
-                Ok(Token::new(TokenKind::Minus, loc, false))
-            }
-            '*' => {
-                self.advance();
-                if self.peek() == Some('*') {
+                if self.peek() == Some('=') {
                     self.advance();
-                    Ok(Token::new(TokenKind::Power, loc, false))
+                    TokenKind::StrictEq
                 } else {
-                    Ok(Token::new(TokenKind::Star, loc, false))
-                }
-            }
-            '/' => {
-                self.advance();
-                if self.peek() == Some('/') {
-                    self.advance();
-                    Ok(Token::new(TokenKind::Remainder, loc, false))
-                } else {
-                    Ok(Token::new(TokenKind::Slash, loc, false))
-                }
-            }
-            '%' => {
-                self.advance();
-                Ok(Token::new(TokenKind::IntDiv, loc, false))
-            }
-            '|' => {
-                self.advance();
-                if self.peek() == Some('|') {
-                    self.advance();
-                    Ok(Token::new(TokenKind::Concat, loc, false))
-                } else {
-                    Ok(Token::new(TokenKind::Or, loc, false))
-                }
-            }
-            '&' => {
-                self.advance();
-                if self.peek() == Some('&') {
-                    self.advance();
-                    Ok(Token::new(TokenKind::Xor, loc, false))
-                } else {
-                    Ok(Token::new(TokenKind::And, loc, false))
+                    // Parser disambiguates assignment vs comparison
+                    TokenKind::Assign
                 }
             }
             '\\' | '¬' => {
@@ -355,28 +334,18 @@ impl Lexer {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Ok(Token::new(TokenKind::StrictNotEq, loc, false))
+                        TokenKind::StrictNotEq
                     } else {
-                        Ok(Token::new(TokenKind::NotEqual, loc, false))
+                        TokenKind::NotEqual
                     }
                 } else if self.peek() == Some('<') {
                     self.advance();
-                    Ok(Token::new(TokenKind::GreaterEq, loc, false))
+                    TokenKind::GreaterEq
                 } else if self.peek() == Some('>') {
                     self.advance();
-                    Ok(Token::new(TokenKind::LessEq, loc, false))
+                    TokenKind::LessEq
                 } else {
-                    Ok(Token::new(TokenKind::Not, loc, false))
-                }
-            }
-            '=' => {
-                self.advance();
-                if self.peek() == Some('=') {
-                    self.advance();
-                    Ok(Token::new(TokenKind::StrictEq, loc, false))
-                } else {
-                    // Parser disambiguates assignment vs comparison
-                    Ok(Token::new(TokenKind::Assign, loc, false))
+                    TokenKind::Not
                 }
             }
             '>' => {
@@ -385,15 +354,15 @@ impl Lexer {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Ok(Token::new(TokenKind::StrictGte, loc, false))
+                        TokenKind::StrictGte
                     } else {
-                        Ok(Token::new(TokenKind::StrictGt, loc, false))
+                        TokenKind::StrictGt
                     }
                 } else if self.peek() == Some('=') {
                     self.advance();
-                    Ok(Token::new(TokenKind::GreaterEq, loc, false))
+                    TokenKind::GreaterEq
                 } else {
-                    Ok(Token::new(TokenKind::Greater, loc, false))
+                    TokenKind::Greater
                 }
             }
             '<' => {
@@ -402,48 +371,58 @@ impl Lexer {
                     self.advance();
                     if self.peek() == Some('=') {
                         self.advance();
-                        Ok(Token::new(TokenKind::StrictLte, loc, false))
+                        TokenKind::StrictLte
                     } else {
-                        Ok(Token::new(TokenKind::StrictLt, loc, false))
+                        TokenKind::StrictLt
                     }
                 } else if self.peek() == Some('=') {
                     self.advance();
-                    Ok(Token::new(TokenKind::LessEq, loc, false))
+                    TokenKind::LessEq
                 } else if self.peek() == Some('>') {
                     self.advance();
-                    Ok(Token::new(TokenKind::NotEqual, loc, false))
+                    TokenKind::NotEqual
                 } else {
-                    Ok(Token::new(TokenKind::Less, loc, false))
+                    TokenKind::Less
                 }
             }
-            '(' => {
-                self.advance();
-                Ok(Token::new(TokenKind::LeftParen, loc, false))
+            _ => {
+                return Err(RexxDiagnostic::new(RexxError::InvalidCharacter)
+                    .at(loc)
+                    .with_detail(format!("unexpected character '{ch}'")));
             }
-            ')' => {
-                self.advance();
-                Ok(Token::new(TokenKind::RightParen, loc, false))
-            }
-            ',' => {
-                self.advance();
-                Ok(Token::new(TokenKind::Comma, loc, false))
-            }
-            '\n' => {
-                self.advance();
-                Ok(Token::new(TokenKind::Eol, loc, false))
-            }
-            ';' => {
-                self.advance();
-                Ok(Token::new(TokenKind::Semicolon, loc, false))
-            }
-            ':' => {
-                self.advance();
-                Ok(Token::new(TokenKind::Colon, loc, false))
-            }
-            _ => Err(RexxDiagnostic::new(RexxError::InvalidCharacter)
-                .at(loc)
-                .with_detail(format!("unexpected character '{ch}'"))),
+        };
+        Ok(Token::new(kind, loc, false))
+    }
+
+    /// Advance past the current char; if the next char is `second`, also
+    /// consume it and return `both`, otherwise return `first_only`. Used for
+    /// the two-character operators whose shape is a single optional second char.
+    fn binary_op(&mut self, second: char, both: TokenKind, first_only: TokenKind) -> TokenKind {
+        self.advance();
+        if self.peek() == Some(second) {
+            self.advance();
+            both
+        } else {
+            first_only
         }
+    }
+
+    /// Map a single character to its token kind when no lookahead is needed.
+    /// Returns `None` for characters that require multi-char lookahead (handled
+    /// in [`Self::lex_operator`]) or are not operators at all.
+    fn single_char_token(ch: char) -> Option<TokenKind> {
+        Some(match ch {
+            '+' => TokenKind::Plus,
+            '-' => TokenKind::Minus,
+            '%' => TokenKind::IntDiv,
+            '(' => TokenKind::LeftParen,
+            ')' => TokenKind::RightParen,
+            ',' => TokenKind::Comma,
+            '\n' => TokenKind::Eol,
+            ';' => TokenKind::Semicolon,
+            ':' => TokenKind::Colon,
+            _ => return None,
+        })
     }
 
     fn lex_string(&mut self, quote: char) -> RexxResult<Token> {
@@ -457,7 +436,9 @@ impl Lexer {
                     .at(loc)
                     .with_detail("unterminated string literal"));
             }
-            let ch = self.advance().unwrap();
+            let Some(ch) = self.advance() else {
+                unreachable!("checked not at_end above");
+            };
             if ch == quote {
                 // Doubled quote is an escape: '' inside '...' means literal '
                 if self.peek() == Some(quote) {
@@ -513,10 +494,12 @@ impl Lexer {
         }
 
         // Exponent part
-        if self.peek().is_some_and(|c| c == 'e' || c == 'E') {
-            num.push(self.advance().unwrap());
-            if self.peek().is_some_and(|c| c == '+' || c == '-') {
-                num.push(self.advance().unwrap());
+        if let Some(c) = self.peek().filter(|c| *c == 'e' || *c == 'E') {
+            self.advance();
+            num.push(c);
+            if let Some(sign) = self.peek().filter(|c| *c == '+' || *c == '-') {
+                self.advance();
+                num.push(sign);
             }
             while let Some(ch) = self.peek() {
                 if ch.is_ascii_digit() {
@@ -558,29 +541,38 @@ impl Lexer {
 
 /// Convert a hex string like "48 65 6C" to characters.
 fn hex_string_to_chars(s: &str) -> Result<String, String> {
-    let hex: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if !hex.len().is_multiple_of(2) {
-        return Err("odd number of hex digits".into());
-    }
-    let mut result = String::new();
-    for i in (0..hex.len()).step_by(2) {
-        let byte = u8::from_str_radix(&hex[i..i + 2], 16)
-            .map_err(|_| format!("invalid hex digit at position {i}"))?;
-        result.push(byte as char);
-    }
-    Ok(result)
+    decode_radix_string(s, 2, 16, "odd number of hex digits", "invalid hex digit")
 }
 
 /// Convert a binary string like "0100 1000" to characters.
 fn bin_string_to_chars(s: &str) -> Result<String, String> {
-    let bits: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if !bits.len().is_multiple_of(8) {
-        return Err("binary string length must be a multiple of 8".into());
+    decode_radix_string(
+        s,
+        8,
+        2,
+        "binary string length must be a multiple of 8",
+        "invalid binary digit",
+    )
+}
+
+/// Shared body of [`hex_string_to_chars`] and [`bin_string_to_chars`]: strip
+/// whitespace, require the digit count to be a multiple of `group`, then decode
+/// each group as a byte in `radix` and push it as a `char`.
+fn decode_radix_string(
+    s: &str,
+    group: usize,
+    radix: u32,
+    length_err: &str,
+    digit_err: &str,
+) -> Result<String, String> {
+    let digits: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if !digits.len().is_multiple_of(group) {
+        return Err(length_err.into());
     }
     let mut result = String::new();
-    for i in (0..bits.len()).step_by(8) {
-        let byte = u8::from_str_radix(&bits[i..i + 8], 2)
-            .map_err(|_| format!("invalid binary digit at position {i}"))?;
+    for i in (0..digits.len()).step_by(group) {
+        let byte = u8::from_str_radix(&digits[i..i + group], radix)
+            .map_err(|_| format!("{digit_err} at position {i}"))?;
         result.push(byte as char);
     }
     Ok(result)
