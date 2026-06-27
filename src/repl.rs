@@ -158,6 +158,15 @@ fn render_line(prompt: &str, input: &str, cursor: usize) {
 
 // ── Submit helper ────────────────────────────────────────────────────
 
+/// Replace `input` with `entry` (when present) and park the editor cursor at
+/// the end. No-op when the history lookup returned `None`.
+fn apply_history_entry(input: &mut String, editor: &mut VimLineEditor, entry: Option<&str>) {
+    if let Some(e) = entry {
+        *input = e.to_string();
+        editor.set_cursor(input.len(), input);
+    }
+}
+
 /// Execute the current input: add to history, run, clear buffer, re-enter
 /// insert mode. Returns `true` if the REPL should exit (EXIT command).
 fn submit(
@@ -209,7 +218,7 @@ fn submit(
 ///
 /// `run_line` is the interpreter callback invoked for each submitted line.
 /// Takes over the terminal (raw mode + panic hook) for the duration of the loop.
-pub fn run(
+pub(crate) fn run(
     environment: &mut env::Environment,
     run_line: fn(&str, &mut env::Environment, &[String]) -> error::RexxResult<i32>,
 ) {
@@ -266,28 +275,28 @@ pub fn run(
             continue;
         }
 
-        // j/k in normal mode → history navigation
-        // (vim-line treats them as line-up/down, which are no-ops on single-line input)
+        // j/k in normal mode → history navigation. Consume the key so it
+        // isn't also dispatched to vim-line (which treats j/k as motion and
+        // would move the cursor). Falls through to the single render at the
+        // bottom of the loop.
+        let mut consumed = false;
         if editor.status() == "NORMAL" {
             match key_event.code {
                 CtKeyCode::Char('k') => {
-                    if let Some(entry) = history.prev(&input) {
-                        input = entry.to_string();
-                        editor.set_cursor(input.len(), &input);
-                    }
-                    render_line("rexx: ", &input, editor.cursor());
-                    continue;
+                    let entry = history.prev(&input);
+                    apply_history_entry(&mut input, &mut editor, entry);
+                    consumed = true;
                 }
                 CtKeyCode::Char('j') => {
-                    if let Some(entry) = history.next() {
-                        input = entry.to_string();
-                        editor.set_cursor(input.len(), &input);
-                    }
-                    render_line("rexx: ", &input, editor.cursor());
-                    continue;
+                    let entry = history.next();
+                    apply_history_entry(&mut input, &mut editor, entry);
+                    consumed = true;
                 }
                 _ => {}
             }
+        }
+        if consumed {
+            continue;
         }
 
         // ── Dispatch to vim-line ────────────────────────────────────
@@ -308,16 +317,12 @@ pub fn run(
                     }
                 }
                 Action::HistoryPrev => {
-                    if let Some(entry) = history.prev(&input) {
-                        input = entry.to_string();
-                        editor.set_cursor(input.len(), &input);
-                    }
+                    let entry = history.prev(&input);
+                    apply_history_entry(&mut input, &mut editor, entry);
                 }
                 Action::HistoryNext => {
-                    if let Some(entry) = history.next() {
-                        input = entry.to_string();
-                        editor.set_cursor(input.len(), &input);
-                    }
+                    let entry = history.next();
+                    apply_history_entry(&mut input, &mut editor, entry);
                 }
                 Action::Cancel => {
                     break;
