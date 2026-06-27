@@ -11,8 +11,8 @@ build-dir = "book"
 [output.html]
 default-theme = "rust"
 preferred-dark-theme = "ayu"
-git-repository-url = "https://github.com/navicore/patch-rexx"
-edit-url-template = "https://github.com/navicore/patch-rexx/edit/main/docs/{path}"
+git-repository-url = "https://git.navicore.tech/navicore/patch-rexx"
+edit-url-template = "https://git.navicore.tech/navicore/patch-rexx/_edit/main/docs/{path}"
 site-url = "/patch-rexx/"
 
 [output.html.fold]
