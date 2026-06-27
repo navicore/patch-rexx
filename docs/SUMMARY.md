@@ -12,6 +12,7 @@
 # Reference
 
 - [Architecture](ARCHITECTURE.md)
+- [API Docs (Rustdoc)](api.md)
 - [Value Model](value-model.md)
 - [Scoping & Environments](scoping.md)
 - [PARSE Engine](parse-engine.md)
