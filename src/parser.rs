@@ -92,6 +92,9 @@ impl KeywordKind {
     }
 }
 
+/// Recursive-descent parser: consumes a token stream from the lexer and
+/// produces an [`Program`] AST. REXX has no reserved words, so keywords are
+/// recognised by context at clause start via [`KeywordKind::lookup`].
 pub struct Parser {
     tokens: Vec<Token>,
     pos: usize,
@@ -621,18 +624,7 @@ impl Parser {
                 self.advance();
                 self.skip_terminators();
 
-                let mut body = Vec::new();
-                loop {
-                    if self.at_end()
-                        || self.is_keyword("WHEN")
-                        || self.is_keyword("OTHERWISE")
-                        || self.is_keyword("END")
-                    {
-                        break;
-                    }
-                    body.push(self.parse_clause()?);
-                    self.skip_terminators();
-                }
+                let body = self.parse_clause_list(&["WHEN", "OTHERWISE", "END"])?;
                 when_clauses.push((condition, body));
                 continue;
             }
@@ -641,14 +633,7 @@ impl Parser {
                 self.advance();
                 self.skip_terminators();
 
-                let mut body = Vec::new();
-                loop {
-                    if self.at_end() || self.is_keyword("END") {
-                        break;
-                    }
-                    body.push(self.parse_clause()?);
-                    self.skip_terminators();
-                }
+                let body = self.parse_clause_list(&["END"])?;
                 otherwise = Some(body);
                 continue;
             }
@@ -665,6 +650,40 @@ impl Parser {
             },
             loc,
         })
+    }
+
+    /// Collect clauses until end-of-input or any of `stop_keywords` is peeked
+    /// (without consuming it — the caller handles the stop keyword). Shared by
+    /// SELECT's WHEN and OTHERWISE bodies, which differ only in what terminates them.
+    /// Parse a `+n` / `-n` relative-position template element. The leading sign
+    /// token is already consumed; `sign` is +1/-1 and `glyph` carries the
+    /// original char for error messages.
+    fn parse_relative_pos(&mut self, sign: i32, glyph: char) -> RexxResult<TemplateElement> {
+        if let TokenKind::Number(n) = self.peek_kind().clone() {
+            self.advance();
+            let val: i32 = n.parse().map_err(|_| {
+                RexxDiagnostic::new(RexxError::InvalidTemplate)
+                    .at(self.loc())
+                    .with_detail(format!("invalid relative position '{glyph}{n}'"))
+            })?;
+            Ok(TemplateElement::RelativePos(sign * val))
+        } else {
+            Err(RexxDiagnostic::new(RexxError::InvalidTemplate)
+                .at(self.loc())
+                .with_detail(format!("expected number after '{glyph}' in template")))
+        }
+    }
+
+    fn parse_clause_list(&mut self, stop_keywords: &[&str]) -> RexxResult<Vec<Clause>> {
+        let mut body = Vec::new();
+        loop {
+            if self.at_end() || stop_keywords.iter().any(|kw| self.is_keyword(kw)) {
+                break;
+            }
+            body.push(self.parse_clause()?);
+            self.skip_terminators();
+        }
+        Ok(body)
     }
 
     /// Parse: LEAVE [name]
@@ -816,35 +835,11 @@ impl Parser {
                 }
                 TokenKind::Plus => {
                     self.advance();
-                    if let TokenKind::Number(n) = self.peek_kind().clone() {
-                        self.advance();
-                        let val: i32 = n.parse().map_err(|_| {
-                            RexxDiagnostic::new(RexxError::InvalidTemplate)
-                                .at(self.loc())
-                                .with_detail(format!("invalid relative position '+{n}'"))
-                        })?;
-                        elements.push(TemplateElement::RelativePos(val));
-                    } else {
-                        return Err(RexxDiagnostic::new(RexxError::InvalidTemplate)
-                            .at(self.loc())
-                            .with_detail("expected number after '+' in template"));
-                    }
+                    elements.push(self.parse_relative_pos(1, '+')?);
                 }
                 TokenKind::Minus => {
                     self.advance();
-                    if let TokenKind::Number(n) = self.peek_kind().clone() {
-                        self.advance();
-                        let val: i32 = n.parse().map_err(|_| {
-                            RexxDiagnostic::new(RexxError::InvalidTemplate)
-                                .at(self.loc())
-                                .with_detail(format!("invalid relative position '-{n}'"))
-                        })?;
-                        elements.push(TemplateElement::RelativePos(-val));
-                    } else {
-                        return Err(RexxDiagnostic::new(RexxError::InvalidTemplate)
-                            .at(self.loc())
-                            .with_detail("expected number after '-' in template"));
-                    }
+                    elements.push(self.parse_relative_pos(-1, '-')?);
                 }
                 TokenKind::LeftParen => {
                     self.advance();
