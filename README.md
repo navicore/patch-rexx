@@ -7,7 +7,7 @@ A modern REXX interpreter in Rust. Single static binary. Correct per ANSI X3.274
 
 **Home Code Repository** is at [git.navicore.tech](https://git.navicore.tech/navicore/patch-rexx)
 
-**PRs and issues** welcome at [codeberg.org mirror](https://codeberg.org/navicore/patch-rexx)
+**PRs and issues** welcome at the [GitHub mirror](https://github.com/navicore/patch-rexx)
 
 **[Documentation](https://docs.navicore.tech/patch-rexx/)**
 
