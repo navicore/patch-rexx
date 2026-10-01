@@ -1,0 +1,39 @@
+# navibot opt-in stub. Copy to .forgejo/workflows/navibot.yml in a repo to
+# have navibot review its PRs. Delete the file to opt out. Requires the
+# OPENROUTER_API_KEY secret to be visible to this repo (user-level secret
+# on the owner's account, or repo-level here).
+#
+# - pull_request (opened/synchronize/reopened): review each new head; a newer
+#   push cancels the in-flight review for the same PR (concurrency group).
+# - issue_comment containing @navibot: on-demand re-review. The bot never
+#   writes @navibot, so its own comments cannot re-trigger it.
+
+name: navibot
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: navibot-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # runs-on disables Forgejo's reusable-workflow expansion (which
+    # mis-evaluates the caller's `if:` server-side and skips the job); the
+    # runner then evaluates `if:` with the real event payload. Must sit at
+    # job-key indent — anything deeper is swallowed by the `if: >-` block.
+    runs-on: navibot
+    if: >-
+      github.event_name == 'pull_request' ||
+      (github.event.issue.pull_request &&
+       contains(github.event.comment.body, '@navibot'))
+    uses: navicore/navibot/.forgejo/workflows/review.yml@main
+    # NOTE: cross-repo reusable workflows require the navibot repo to be
+    # public (Forgejo docs, jobs.<job_id>.uses). It holds no secrets.
+    with:
+      pr: ${{ github.event.pull_request.number || github.event.issue.number }}
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
