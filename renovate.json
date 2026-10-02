@@ -1,11 +1,1 @@
-{
-  "extends": ["config:recommended"],
-  "packageRules": [
-    {
-      "description": "Forgejo Actions only implements the GHES-compatible (v3) artifact backend; v4+ errors with GHESNotSupportedError. Pin until Forgejo ships the v2.0 backend.",
-      "matchManagers": ["github-actions"],
-      "matchPackageNames": ["actions/upload-artifact", "actions/download-artifact"],
-      "allowedVersions": "<4"
-    }
-  ]
-}
+{ "extends": ["config:recommended"] }
