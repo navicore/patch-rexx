@@ -1,12 +1,19 @@
-# navibot opt-in stub. Copy to .forgejo/workflows/navibot.yml in a repo to
-# have navibot review its PRs. Delete the file to opt out. Requires the
-# OPENROUTER_API_KEY secret to be visible to this repo (user-level secret
-# on the owner's account, or repo-level here).
+# navibot opt-in stub — STUB VERSION 2 (two secrets: OPENROUTER_API_KEY +
+# TYPESAFE_API_KEY). Stubs are COPIES and drift: when this file changes in
+# navicore/navibot, re-copy it into every watched repo, and check this
+# version line when a review comment says a key is empty. Copy to
+# .forgejo/workflows/navibot.yml in a repo to have navibot review its PRs.
+# Delete the file to opt out. Requires both secrets to be visible to this
+# repo (user-level secrets on the owner's account, or repo-level here).
 #
 # - pull_request (opened/synchronize/reopened): review each new head; a newer
 #   push cancels the in-flight review for the same PR (concurrency group).
 # - issue_comment containing @navibot: on-demand re-review. The bot never
-#   writes @navibot, so its own comments cannot re-trigger it.
+#   writes @navibot (case-insensitively redacted), and its own comments are
+#   excluded by actor here too, so they cannot re-trigger it from either end.
+# - Blocker findings fail the check (red X) after the comment is posted. To
+#   gate merges on it, list "navibot / review" as a required status check
+#   in branch protection — see the navibot README "Merge gating".
 
 name: navibot
 on:
@@ -29,7 +36,8 @@ jobs:
     if: >-
       github.event_name == 'pull_request' ||
       (github.event.issue.pull_request &&
-       contains(github.event.comment.body, '@navibot'))
+       contains(github.event.comment.body, '@navibot') &&
+       github.event.comment.user.login != 'forgejo-actions')
     uses: navicore/navibot/.forgejo/workflows/review.yml@main
     # NOTE: cross-repo reusable workflows require the navibot repo to be
     # public (Forgejo docs, jobs.<job_id>.uses). It holds no secrets.
@@ -37,3 +45,4 @@ jobs:
       pr: ${{ github.event.pull_request.number || github.event.issue.number }}
     secrets:
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
