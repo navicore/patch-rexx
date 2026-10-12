@@ -18,7 +18,7 @@ lsp = ["dep:tower-lsp", "dep:tokio", "dep:serde_json"]
 [dependencies]
 # Arbitrary-precision decimal arithmetic (REXX's core numeric model)
 bigdecimal = "0.4"
-num-bigint = "0.4"
+num-bigint = "0.5"
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
