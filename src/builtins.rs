@@ -8,7 +8,7 @@ use crate::env::Environment;
 use crate::error::{RexxDiagnostic, RexxError, RexxResult};
 use crate::value::{NumericSettings, RexxValue};
 use bigdecimal::BigDecimal;
-use rand::Rng;
+use rand::RngExt;
 use std::fmt::Write;
 
 // ── Public dispatch ─────────────────────────────────────────────────
