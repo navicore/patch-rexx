@@ -28,7 +28,7 @@ vim-line = "4"
 crossterm = "0.29"
 
 # Random number generation (RANDOM BIF)
-rand = "0.9"
+rand = "0.10"
 
 # Regex (for PARSE template patterns and BIFs)
 regex = "1.11"
