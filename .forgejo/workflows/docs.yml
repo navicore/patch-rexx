@@ -23,7 +23,7 @@ jobs:
     name: Build and publish docs
     runs-on: navicore-rust
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # mdbook is baked into the navicore-rust runner image
       # (see ../navicore-forgejo-runner), so there is no per-run install.
