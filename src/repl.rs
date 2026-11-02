@@ -325,6 +325,12 @@ pub(crate) fn run(
                     Action::Cancel => {
                         break;
                     }
+                    // History search and Ex commands are host-driven features
+                    // that this REPL does not implement.
+                    Action::HistorySearch(_)
+                    | Action::HistoryAccept
+                    | Action::HistoryCancel
+                    | Action::SubmitCommand(_) => {}
                 }
             }
         }
