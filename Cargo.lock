@@ -1207,9 +1207,9 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 
 [[package]]
 name = "vim-line"
-version = "4.2.1"
+version = "7.7.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4cc7480ebf827033545a9612a05bb6f9389572b8295d5b56bc3e9ec4721aa27"
+checksum = "df65313d93722f48712ee51ac992c852a41087130f24a2a4252b68be0596ab4e"
 
 [[package]]
 name = "wasi"
