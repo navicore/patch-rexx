@@ -1030,10 +1030,8 @@ impl<'a> Evaluator<'a> {
         if let ParseSource::Arg = source {
             let args = self.arg_stack.last().cloned().unwrap_or_default();
             for (i, sub_t) in sub_templates.iter().enumerate() {
-                let raw = args
-                    .get(i)
-                    .map(|v| v.as_str().to_string())
-                    .unwrap_or_default();
+                let raw = args.get(i).map_or_default(|v| v.as_str().to_string());
+
                 let text = if upper { raw.to_uppercase() } else { raw };
                 self.apply_template(&text, sub_t)?;
             }
